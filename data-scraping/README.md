@@ -61,7 +61,7 @@ cp .env.example .env
 
 ### 3. Start the FastAPI Server
 ```bash
-.\venv\Scripts\uvicorn app.main:app --reload --port 8000
+..\venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
 ```
 - Interactive Swagger UI: **http://127.0.0.1:8000/docs**
 - ReDoc UI: **http://127.0.0.1:8000/redoc**
