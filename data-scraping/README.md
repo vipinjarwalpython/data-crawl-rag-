@@ -1,6 +1,6 @@
-# 🕷️ CrawlRAG - Module 1: Web Scraping, Recursive Crawler & JSON Storage
+# 🕷️ CrawlRAG - Production Web Scraping & AI RAG Ingestion Engine
 
-**CrawlRAG** is a production-grade, modular FastAPI system designed to scrape websites, crawl nested links recursively, convert HTML into structured JSON and clean Markdown, and prepare data for Vector Embeddings and RAG Chatbots.
+**CrawlRAG** is a production-grade, modular FastAPI system designed to crawl websites, render dynamic JavaScript / React SPAs, extract 100% of clean text and hierarchical Markdown, and persist structured JSON data ready for Vector Embeddings and RAG Chatbot pipelines.
 
 ---
 
@@ -13,31 +13,36 @@ data-scraping/
 │   ├── main.py                        # FastAPI entry point & lifespan manager
 │   ├── core/
 │   │   ├── __init__.py
-│   │   ├── config.py                  # Pydantic BaseSettings (.env loader & path manager)
+│   │   ├── config.py                  # Pydantic Settings (.env loader & storage paths)
 │   │   └── logging.py                 # Structured logger
 │   └── modules/
 │       ├── __init__.py
-│       └── scraping/                  # MODULE 1: Web Scraping & Storage
+│       └── scraping/                  # MODULE 1: Web Scraping & Crawler Engine
 │           ├── __init__.py
-│           ├── schemas.py             # Pydantic schemas (Requests, Responses, JSON Document)
-│           ├── parsers.py             # BeautifulSoup parser (Boilerplate removal, Clean Markdown, Links)
-│           ├── crawler.py             # Async BFS Recursive Crawler with concurrency & rate limiting
-│           ├── json_store.py          # JSON Document File Store & SHA-256 Hasher
-│           ├── service.py             # Orchestration service for single/nested scraping
-│           └── router.py              # REST API endpoints (/page, /crawl, /documents)
+│           ├── schemas.py             # Pydantic schemas (Unified request/response, documents)
+│           ├── parsers.py             # BeautifulSoup parser (100% text, headings, clean markdown)
+│           ├── crawler.py             # Thread-safe Playwright + HTTPX Async Spider Crawler
+│           ├── json_store.py          # JSON File Storage Manager & SHA-256 Hasher
+│           ├── service.py             # Scraping orchestrator
+│           └── router.py              # REST API router (/scrape, /documents)
 │
 ├── scripts/
-│   └── download_models.py             # Hugging Face downloader for embeddings & LLM models
+│   └── download_models.py             # Hugging Face model downloader for embeddings & LLMs
 │
 ├── data/
 │   └── scraped/                       # JSON document storage location
 │
 ├── models/                            # Local directory for cached Hugging Face models
-│   ├── embeddings/                    # Downloaded sentence transformers / vector models
-│   └── llm/                           # Downloaded LLM tokenizers / weights
+│   ├── embeddings/                    # Vector embedding models (e.g. BAAI/bge-small-en-v1.5)
+│   └── llm/                           # LLM weights and tokenizers (e.g. Qwen2.5-0.5B-Instruct)
 │
+├── tests/
+│   └── test_scraping_module.py        # Automated test suite
+│
+├── CrawlRAG.postman_collection.json   # Ready-to-import Postman Collection
 ├── requirements.txt                   # Production Python dependencies
 ├── .env.example                       # Configuration template
+├── .env                               # Active environment variables
 └── README.md
 ```
 
@@ -46,40 +51,44 @@ data-scraping/
 ## ⚡ Quickstart & Setup
 
 ### 1. Install Dependencies
-Activate your virtual environment and install the required packages:
+Activate your virtual environment and install dependencies:
 
-```bash
-# Windows PowerShell
-.\venv\Scripts\pip install -r requirements.txt
+```powershell
+# Activate your venv
+.\venv\Scripts\activate
+# (or if located in parent: ..\venv\Scripts\activate)
+
+# Install requirements
+pip install -r requirements.txt
+
+# Install Playwright Chromium headless browser
+playwright install chromium
 ```
 
-### 2. Configure Environment
-Copy `.env.example` to `.env` (already done by default):
-```bash
-cp .env.example .env
+### 2. Start the FastAPI Server
+
+```powershell
+python -m uvicorn app.main:app --reload --port 8000
 ```
 
-### 3. Start the FastAPI Server
-```bash
-..\venv\Scripts\python -m uvicorn app.main:app --reload --port 8000
-```
-- Interactive Swagger UI: **http://127.0.0.1:8000/docs**
-- ReDoc UI: **http://127.0.0.1:8000/redoc**
-- Health Check: **http://127.0.0.1:8000/health**
+* 📖 **Interactive Swagger UI (API Docs):** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+* 📑 **ReDoc UI:** [http://127.0.0.1:8000/redoc](http://127.0.0.1:8000/redoc)
+* 🩺 **Health Check:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
 ---
 
-## 🌐 Single Unified API Endpoint (Module 1)
+## 🌐 API Endpoints
 
-### `POST /api/v1/scraping/scrape`
+### 1. Unified Scraping & Spider Crawler
+**`POST /api/v1/scraping/scrape`**
 
 **One single endpoint for everything**:
-1. You provide **1 URL** (e.g. `https://humanixtechnologies.com/`).
-2. Renders dynamic JavaScript / React / Next.js client-side SPAs via headless Playwright Chromium.
-3. Extracts all text words, clean markdown, and hierarchical headings (`h1`-`h6`) with full accuracy.
-4. Automatically discovers all internal links (`<a href="...">`) on that page.
-5. Automatically traverses and scrapes each discovered subpage recursively up to `max_depth` and `max_pages`.
-6. Saves each page into its own individual JSON file in `data/scraped/`.
+1. Takes **1 Seed URL** (e.g. `https://humanixtechnologies.com/`).
+2. Renders dynamic client-side JavaScript / React / Vue SPAs with automated progressive scrolling.
+3. Extracts **100% of all text, structured headings (`h1`-`h6`), clean markdown, and contact info**.
+4. Automatically discovers all internal links on that page.
+5. Recursively visits and scrapes each subpage one-by-one up to `max_depth` and `max_pages`.
+6. Saves each page into its own individual JSON file in `data/scraped/{doc_id}.json`.
 7. Directly returns the **full structured JSON data of all scraped pages** in the response body.
 
 **Request Body:**
@@ -87,34 +96,35 @@ cp .env.example .env
 {
   "url": "https://humanixtechnologies.com/",
   "max_depth": 2,
-  "max_pages": 10,
+  "max_pages": 15,
   "render_js": true,
   "wait_seconds": 2.5,
   "concurrency": 2,
   "delay_seconds": 0.5,
+  "stay_within_path": false,
   "force_refresh": true
 }
 ```
 
-*Note: If you only want to scrape a single page without following links, set `"max_depth": 0` or `"max_pages": 1`.*
+*Note: For scraping only a single page without following links, set `"max_depth": 0` or `"max_pages": 1`.*
 
 ---
 
-### 3. List All Saved JSON Documents
-**`GET /api/v1/scraping/documents?skip=0&limit=50&query=tutorial`**
+### 2. List Stored JSON Documents
+**`GET /api/v1/scraping/documents?skip=0&limit=50`**
 
 Returns lightweight metadata summaries of all saved JSON files on disk.
 
 ---
 
-### 4. Get a Specific Stored Document
+### 3. Get Scraped Document by ID
 **`GET /api/v1/scraping/documents/{doc_id}`**
 
-Fetches the complete structured JSON representation of a scraped document.
+Fetches the complete structured JSON payload of a previously scraped document.
 
 ---
 
-### 5. Delete a Stored Document
+### 4. Delete Stored Document
 **`DELETE /api/v1/scraping/documents/{doc_id}`**
 
 Deletes a document JSON file from `data/scraped/`.
@@ -123,65 +133,90 @@ Deletes a document JSON file from `data/scraped/`.
 
 ## 📦 Hugging Face Model Downloader Script
 
-Use `scripts/download_models.py` to download and verify Hugging Face embedding and LLM models locally so they can run completely offline without API fees:
+Use `scripts/download_models.py` to download and verify Hugging Face embedding and LLM models locally for offline RAG inference:
 
-```bash
-# 1. Download default embedding model (BAAI/bge-small-en-v1.5) with automatic verification
-.\venv\Scripts\python scripts/download_models.py --embedding-model BAAI/bge-small-en-v1.5 --verify
+```powershell
+# 1. Download default embedding model (BAAI/bge-small-en-v1.5) with automatic verification:
+python scripts/download_models.py --embedding-model BAAI/bge-small-en-v1.5 --verify
 
-# 2. Download a lightweight Hugging Face LLM (e.g., Qwen2.5-0.5B-Instruct)
-.\venv\Scripts\python scripts/download_models.py --llm-model Qwen/Qwen2.5-0.5B-Instruct
+# 2. Download a lightweight LLM model (Qwen/Qwen2.5-0.5B-Instruct):
+python scripts/download_models.py --llm-model Qwen/Qwen2.5-0.5B-Instruct
 
-# 3. Download both embedding and LLM models at once
-.\venv\Scripts\python scripts/download_models.py --all
+# 3. Download both embedding and LLM models at once:
+python scripts/download_models.py --all --verify
 ```
-
-Downloaded models will be neatly cached in:
-- `models/embeddings/{model_name}/`
-- `models/llm/{model_name}/`
 
 ---
 
-## 📄 Stored JSON Document Format Example
+## 📮 Postman Collection
 
-Each scraped page is saved as a JSON file (`data/scraped/doc_XXXXXXXXXXXX.json`) adhering to this schema:
+A pre-configured Postman Collection is included: [`CrawlRAG.postman_collection.json`](file:///d:/data-scraping/CrawlRAG.postman_collection.json).
+
+### How to Import:
+1. Open **Postman**.
+2. Click **Import** (top-left).
+3. Select `d:\data-scraping\CrawlRAG.postman_collection.json`.
+4. Run the request **`⚡ Scrape & Auto-Crawl Website (Full Accuracy)`**!
+
+---
+
+## 📄 Stored JSON Schema Example
+
+Each scraped page is saved in `data/scraped/{doc_id}.json` with this complete schema:
 
 ```json
 {
-  "id": "doc_a1b2c3d4e5f6",
-  "url": "https://docs.python.org/3/tutorial/index.html",
-  "title": "The Python Tutorial — Python 3 Documentation",
-  "description": "Python is an easy to learn, powerful programming language...",
-  "raw_markdown": "# The Python Tutorial\n\nPython is an easy to learn...",
-  "clean_text": "The Python Tutorial\nPython is an easy to learn...",
+  "id": "doc_9ac7a57aaf67",
+  "url": "https://humanixtechnologies.com/",
+  "title": "Humanix Technologies",
+  "description": "Web site created using create-react-app",
+  "raw_markdown": "# Humanix Technologies\n\n## Hire On Demand Developers...\n\n##### IT Consulting...",
+  "clean_text": "Humanix Technologies\nHire On Demand Developers...",
   "sections": [
     {
-      "heading": "Whetting Your Appetite",
-      "level": 2,
-      "content": "If you do much work on computers, eventually you find that..."
+      "heading": "IT Consulting",
+      "level": 5,
+      "content": "Humanix Technologies streamline complexity to deliver digital success..."
+    },
+    {
+      "heading": "Permanent Staffing",
+      "level": 5,
+      "content": "With a talent pool of over 2,000 top-tier professionals..."
     }
   ],
   "internal_links": [
-    "https://docs.python.org/3/tutorial/appetite.html",
-    "https://docs.python.org/3/tutorial/interpreter.html"
+    "https://humanixtechnologies.com/IT-consulting",
+    "https://humanixtechnologies.com/Permanent-staffing",
+    "https://humanixtechnologies.com/about"
   ],
-  "external_links": [],
-  "content_hash": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "depth": 1,
+  "external_links": [
+    "https://api.whatsapp.com/..."
+  ],
+  "content_hash": "cf25dd55118c0474a731bc581bc52d15b2c8590f7c3e235047feb6754d10294c",
+  "depth": 0,
   "status_code": 200,
-  "scraped_at": "2026-08-12T13:55:00Z",
+  "scraped_at": "2026-08-12T10:05:25.123456Z",
   "metadata": {
     "parser": "beautifulsoup4",
-    "character_count": 4820,
-    "section_count": 6,
-    "internal_link_count": 18,
-    "external_link_count": 0
+    "character_count": 3405,
+    "word_count": 480,
+    "section_count": 25,
+    "internal_link_count": 15,
+    "external_link_count": 5
   }
 }
 ```
 
 ---
 
-## 🚀 Next Phases (Modules 2 & 3)
-- **Module 2**: Header-aware & parent-child chunking from the saved JSON files into local Vector DB embeddings.
-- **Module 3**: FastAPI RAG retrieval pipeline with token streaming for real-time AI Chatbot responses.
+## 🧪 Run Automated Tests
+
+```powershell
+python tests/test_scraping_module.py
+```
+
+---
+
+## 🚀 Next Phases
+* **Module 2**: Parent-child and header-aware chunking from the saved JSON files into local Vector DB embeddings.
+* **Module 3**: FastAPI RAG retrieval pipeline with token streaming for real-time AI Chatbot responses.
