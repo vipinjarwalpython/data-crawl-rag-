@@ -1,0 +1,126 @@
+{
+  "info": {
+    "_postman_id": "c7a8e9d0-1b2c-4d3e-8f9a-0b1c2d3e4f5a",
+    "name": "CrawlRAG API Collection",
+    "description": "Unified Postman collection for CrawlRAG: Automated single/nested crawling with React JavaScript rendering, BeautifulSoup parsing, and JSON document persistence.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Primary Unified Scraper",
+      "item": [
+        {
+          "name": "⚡ Scrape & Auto-Crawl Website (Full Accuracy)",
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"url\": \"https://humanixtechnologies.com/\",\n  \"max_depth\": 2,\n  \"max_pages\": 10,\n  \"render_js\": true,\n  \"wait_seconds\": 2.5,\n  \"concurrency\": 2,\n  \"delay_seconds\": 0.5,\n  \"force_refresh\": true\n}"
+            },
+            "url": {
+              "raw": "{{base_url}}/api/v1/scraping/scrape",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "scraping", "scrape"]
+            },
+            "description": "ONE Unified Endpoint:\n1. Takes 1 seed URL.\n2. Renders dynamic JavaScript / React SPAs.\n3. Extracts main page content + all words and headings.\n4. Discovers all internal links and automatically crawls each subpage.\n5. Saves each page into its own JSON file in data/scraped/.\n6. Returns the full structured JSON for EVERY scraped page in the response body."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "2. Document Store Inspection",
+      "item": [
+        {
+          "name": "List All Saved JSON Documents",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scraping/documents?skip=0&limit=50",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "scraping", "documents"],
+              "query": [
+                {
+                  "key": "skip",
+                  "value": "0"
+                },
+                {
+                  "key": "limit",
+                  "value": "50"
+                }
+              ]
+            },
+            "description": "Lists metadata summaries of all saved JSON files on disk."
+          },
+          "response": []
+        },
+        {
+          "name": "Get Document by ID",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scraping/documents/{{doc_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "scraping", "documents", "{{doc_id}}"]
+            },
+            "description": "Fetches the full structured JSON content of a specific saved document."
+          },
+          "response": []
+        },
+        {
+          "name": "Delete Document by ID",
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/scraping/documents/{{doc_id}}",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "scraping", "documents", "{{doc_id}}"]
+            },
+            "description": "Deletes a specific JSON document from disk."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "3. Health & Info",
+      "item": [
+        {
+          "name": "Health Check",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/health",
+              "host": ["{{base_url}}"],
+              "path": ["health"]
+            },
+            "description": "Check if API and storage directories are healthy."
+          },
+          "response": []
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8000",
+      "type": "string"
+    },
+    {
+      "key": "doc_id",
+      "value": "doc_9ac7a57aaf67",
+      "type": "string"
+    }
+  ]
+}
