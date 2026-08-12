@@ -160,7 +160,8 @@ class AsyncCrawler:
         url: str,
         allowed_domains: Set[str],
         base_path: str,
-        stay_within_path: bool
+        stay_within_path: bool,
+        allow_external: bool = False
     ) -> bool:
         """Check if URL matches domain and path criteria."""
         try:
@@ -168,7 +169,7 @@ class AsyncCrawler:
             domain = parsed.netloc.lower()
             
             # Check domain
-            if domain not in allowed_domains:
+            if not allow_external and domain not in allowed_domains:
                 return False
 
             # Ignore common binary/media extensions
@@ -181,7 +182,7 @@ class AsyncCrawler:
                 return False
 
             # Check path boundary if enabled
-            if stay_within_path and base_path and base_path != "/":
+            if not allow_external and stay_within_path and base_path and base_path != "/":
                 if not parsed.path.startswith(base_path):
                     return False
 
@@ -273,9 +274,14 @@ class AsyncCrawler:
                         if on_document_scraped:
                             await on_document_scraped(doc)
 
-                        # Enqueue newly discovered internal links if depth limit allows
+                        # Enqueue newly discovered links if depth limit allows
                         if depth < request.max_depth:
-                            for link in doc.internal_links:
+                            crawl_external = getattr(request, "crawl_external_links", True)
+                            links_to_crawl = list(doc.internal_links)
+                            if crawl_external:
+                                links_to_crawl.extend(doc.external_links)
+
+                            for link in links_to_crawl:
                                 normalized_link = HTMLParser.normalize_url(link, current_url)
                                 if not normalized_link:
                                     continue
@@ -285,7 +291,8 @@ class AsyncCrawler:
                                         normalized_link,
                                         allowed_domains,
                                         base_path,
-                                        request.stay_within_path
+                                        request.stay_within_path,
+                                        allow_external=crawl_external
                                     ):
                                         visited_urls.add(normalized_link)
                                         total_discovered += 1

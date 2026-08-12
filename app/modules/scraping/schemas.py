@@ -48,6 +48,10 @@ class UnifiedScrapeRequest(BaseModel):
         default=False,
         description="If true, only follows links matching the path prefix of the seed URL"
     )
+    crawl_external_links: bool = Field(
+        default=True,
+        description="If true, recursively crawls external links discovered on any pages"
+    )
     force_refresh: bool = Field(
         default=False,
         description="If true, re-scrapes even if cached JSON already exists"

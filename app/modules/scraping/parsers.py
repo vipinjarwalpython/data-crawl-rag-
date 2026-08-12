@@ -67,49 +67,111 @@ class HTMLParser:
         return None
 
     @classmethod
+    def find_lca(cls, node1, node2) -> Optional[Tag]:
+        """Find lowest common ancestor tag of two BeautifulSoup nodes."""
+        if not node1 or not node2:
+            return None
+        ancestors1 = set(node1.parents)
+        ancestors1.add(node1)
+        
+        for parent in node2.parents:
+            if parent in ancestors1:
+                return parent
+        if node2 in ancestors1:
+            return node2
+        return None
+
+    @classmethod
     def extract_sections(cls, soup: BeautifulSoup) -> List[ExtractedSection]:
         """Extract hierarchical sections (heading + associated text content)."""
-        sections: List[ExtractedSection] = []
+        container = soup.find("body") or soup
         heading_tags = ["h1", "h2", "h3", "h4", "h5", "h6"]
         
-        container = soup.find("body") or soup
-
-        current_heading = "Overview"
-        current_level = 1
-        current_text_parts: List[str] = []
-
+        # 1. Collect all headings and text leaf nodes in DOM order
+        nodes = []
         for element in container.descendants:
             if isinstance(element, Tag):
                 if element.name in heading_tags:
-                    combined_text = " ".join(current_text_parts).strip()
-                    if combined_text:
-                        sections.append(ExtractedSection(
-                            heading=current_heading,
-                            level=current_level,
-                            content=combined_text
-                        ))
-                    
-                    current_heading = element.get_text(strip=True) or "Untitled Section"
-                    try:
-                        current_level = int(element.name[1])
-                    except (ValueError, IndexError):
-                        current_level = 1
-                    current_text_parts = []
+                    nodes.append(("heading", element))
                 elif element.name in ["p", "li", "blockquote", "td", "th", "div", "span", "a", "label"]:
                     # Only collect direct text or leaf text to avoid duplicating parent container text
                     if not any(isinstance(child, Tag) and child.name in ["p", "div", "section", "article"] for child in element.children):
                         text = element.get_text(strip=True)
-                        if text and len(text) > 3 and text not in current_text_parts:
-                            current_text_parts.append(text)
+                        if text and len(text) > 3:
+                            # Avoid adding identical consecutive text node text
+                            if not nodes or nodes[-1][0] != "text" or nodes[-1][2] != text:
+                                nodes.append(("text", element, text))
 
-        combined_text = " ".join(current_text_parts).strip()
-        if combined_text:
+        # 2. Map heading elements to accumulated text parts
+        headings_indices = [i for i, n in enumerate(nodes) if n[0] == "heading"]
+        heading_content_map = {}
+        overview_texts = []
+        
+        for i in headings_indices:
+            heading_content_map[nodes[i][1]] = []
+            
+        for i, node in enumerate(nodes):
+            if node[0] != "text":
+                continue
+                
+            text_element = node[1]
+            text_content = node[2]
+            
+            # Find preceding and succeeding headings
+            preceding_h = None
+            succeeding_h = None
+            
+            for h_idx in headings_indices:
+                h_node = nodes[h_idx][1]
+                if h_idx < i:
+                    preceding_h = h_node
+                elif h_idx > i:
+                    succeeding_h = h_node
+                    break
+                    
+            if not preceding_h and not succeeding_h:
+                overview_texts.append(text_content)
+            elif not preceding_h:
+                heading_content_map[succeeding_h].append(text_content)
+            elif not succeeding_h:
+                heading_content_map[preceding_h].append(text_content)
+            else:
+                # Both exist. Determine structural closeness using LCA
+                lca_prev = cls.find_lca(text_element, preceding_h)
+                lca_next = cls.find_lca(text_element, succeeding_h)
+                
+                # If LCA with next heading is a descendant of LCA with prev heading, next heading is closer
+                if lca_prev and lca_next and lca_prev in lca_next.parents:
+                    heading_content_map[succeeding_h].append(text_content)
+                else:
+                    heading_content_map[preceding_h].append(text_content)
+
+        # 3. Build section list in the order headings appear
+        sections: List[ExtractedSection] = []
+        
+        # Include Overview section if there was text preceding the first heading
+        if overview_texts:
             sections.append(ExtractedSection(
-                heading=current_heading,
-                level=current_level,
-                content=combined_text
+                heading="Overview",
+                level=1,
+                content=" ".join(overview_texts).strip()
             ))
-
+            
+        for h_idx in headings_indices:
+            heading_el = nodes[h_idx][1]
+            heading_text = heading_el.get_text(strip=True) or "Untitled Section"
+            try:
+                level = int(heading_el.name[1])
+            except (ValueError, IndexError):
+                level = 1
+                
+            content = " ".join(heading_content_map[heading_el]).strip()
+            sections.append(ExtractedSection(
+                heading=heading_text,
+                level=level,
+                content=content
+            ))
+            
         return sections
 
     @classmethod
