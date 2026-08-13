@@ -16,6 +16,7 @@ from fastapi.responses import JSONResponse
 from app.core.config import settings
 from app.core.logging import logger
 from app.modules.scraping.router import router as scraping_router
+from app.modules.rag.router import router as rag_router
 
 
 @asynccontextmanager
@@ -52,6 +53,7 @@ app.add_middleware(
 
 # Register API Routers
 app.include_router(scraping_router, prefix=settings.API_V1_PREFIX)
+app.include_router(rag_router, prefix=settings.API_V1_PREFIX)
 
 
 @app.get("/", tags=["Health & Info"])
@@ -64,7 +66,7 @@ async def root():
         "docs_url": "/docs",
         "modules": {
             "module_1": "Web Scraping, Recursive Crawler & JSON Storage (Active)",
-            "module_2": "Vector Embeddings & Indexing (Planned)",
+            "module_2": "Text Cleaning, Recursive Chunking, all-MiniLM-L6-v2 Embeddings & Vector DB Search (Active)",
             "module_3": "RAG Chatbot Pipeline (Planned)"
         }
     }

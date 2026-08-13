@@ -218,5 +218,5 @@ python tests/test_scraping_module.py
 ---
 
 ## 🚀 Next Phases
-* **Module 2**: Parent-child and header-aware chunking from the saved JSON files into local Vector DB embeddings.
+* ~~**Module 2**: Parent-child and header-aware chunking from the saved JSON files into local Vector DB embeddings.~~ (Completed: Text Cleaning, Recursive Character Chunking, `all-MiniLM-L6-v2` Local Embeddings & Vector DB Indexing)
 * **Module 3**: FastAPI RAG retrieval pipeline with token streaming for real-time AI Chatbot responses.
