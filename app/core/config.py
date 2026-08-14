@@ -1,6 +1,6 @@
 from pathlib import Path
-from typing import List, Optional
-from pydantic import Field
+from typing import List, Optional, Any
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,11 +20,24 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     API_V1_PREFIX: str = "/api/v1"
 
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def parse_debug(cls, v: Any) -> bool:
+        if isinstance(v, bool):
+            return v
+        if isinstance(v, str):
+            if v.lower() in ("true", "1", "t", "yes", "y", "on"):
+                return True
+            if v.lower() in ("false", "0", "f", "no", "n", "off", "release", "prod", "production"):
+                return False
+        return bool(v)
+
     # Base Paths
     BASE_DIR: Path = Path(__file__).resolve().parent.parent.parent
     DATA_DIR: Path = Field(default_factory=lambda: Path("data"))
     SCRAPED_DIR: Path = Field(default_factory=lambda: Path("data/scraped"))
-    PROCESSED_DIR: Path = Field(default_factory=lambda: Path("data/processed"))
+    CLEAN_DATA_DIR: Path = Field(default_factory=lambda: Path("data/clean_data"))
+    CHUNKED_DATA_DIR: Path = Field(default_factory=lambda: Path("data/chunked_data"))
     VECTOR_STORE_DIR: Path = Field(default_factory=lambda: Path("data/vector_store"))
     MODELS_DIR: Path = Field(default_factory=lambda: Path("models"))
     EMBEDDINGS_DIR: Path = Field(default_factory=lambda: Path("models/embeddings"))
@@ -53,7 +66,8 @@ class Settings(BaseSettings):
         for path in [
             self.DATA_DIR,
             self.SCRAPED_DIR,
-            self.PROCESSED_DIR,
+            self.CLEAN_DATA_DIR,
+            self.CHUNKED_DATA_DIR,
             self.VECTOR_STORE_DIR,
             self.MODELS_DIR,
             self.EMBEDDINGS_DIR,
