@@ -22,20 +22,25 @@ htmlcov/
 
 # 📁 Local Storage & Data (Generated runtime data)
 data/*
+backend/data/*
 
 # 🤖 Downloaded Machine Learning Models
 models/*
+backend/models/*
 
 # 🔑 Environment Configurations & Secrets
 # Ignore local environment files containing credentials and settings
 .env
+backend/.env
 .env.local
+backend/.env.local
 .env.development.local
 .env.test.local
 .env.production.local
 
 # DO NOT ignore the env example template
 !.env.example
+!backend/.env.example
 
 # 💻 OS / IDE / Editor Specific Files
 .vscode/
@@ -43,6 +48,7 @@ models/*
 .DS_Store
 Thumbs.db
 logs/*
+backend/logs/*
 
 # 📦 Node / Frontend Build Artifacts
 node_modules/

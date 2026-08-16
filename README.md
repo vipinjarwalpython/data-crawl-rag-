@@ -129,52 +129,45 @@
 
 ```
 data-scraping/
-├── app/
-│   ├── main.py                        # FastAPI app, routers, CORS, lifespan
-│   ├── core/
-│   │   ├── config.py                  # All settings (from .env)
-│   │   └── logging.py                 # Rotating file logger + module loggers
-│   └── modules/
-│       ├── scraping/
-│       │   ├── crawler.py             # AsyncCrawler: BFS crawl, Playwright + HTTPX
-│       │   ├── parsers.py             # HTMLParser: title, sections, links, markdown
-│       │   ├── json_store.py          # JSONStore: save/load/list/delete documents
-│       │   ├── service.py             # ScrapingService: orchestrates crawl + save
-│       │   ├── router.py              # FastAPI routes for scraping
-│       │   └── schemas.py             # Pydantic models for scraping
-│       └── rag/
-│           ├── cleaner.py             # TextCleaner: boilerplate removal
-│           ├── chunker.py             # RecursiveCharacterChunker
-│           ├── embeddings.py          # EmbeddingManager: all-MiniLM-L6-v2
-│           ├── vector_store.py        # VectorStore: numpy similarity search
-│           ├── llm.py                 # LLMManager + LLMOutputCleaner (Qwen)
-│           ├── service.py             # RAGPipelineService: full pipeline logic
-│           ├── router.py              # FastAPI routes for RAG
-│           └── schemas.py             # Pydantic models for RAG
+├── backend/                           # 🐍 Python FastAPI Backend & AI Pipeline
+│   ├── app/
+│   │   ├── main.py                    # FastAPI app, routers, CORS, lifespan
+│   │   ├── core/
+│   │   │   ├── config.py              # Application settings (loaded from .env)
+│   │   │   └── logging.py             # Rotating file logger + module loggers
+│   │   └── modules/
+│   │       ├── scraping/              # Spider crawler, parsers, json store
+│   │       └── rag/                   # Cleaner, chunker, BGE embeddings, Qwen LLM
+│   ├── data/
+│   │   ├── scraped/                   # Raw scraped JSON files (one per page)
+│   │   ├── clean_data/                # Cleaned JSON files
+│   │   ├── chunked_data/              # Semantic chunked JSON files
+│   │   └── vector_store/              # vector_index.npy + metadata.json
+│   ├── models/
+│   │   ├── embeddings/                # Local cache for BAAI/bge-small-en-v1.5
+│   │   └── llm/                       # Local cache for Qwen2.5-1.5B-Instruct
+│   ├── logs/
+│   │   └── crawlrag.log               # Rotating server audit logs
+│   ├── scripts/
+│   │   └── download_models.py         # Offline model pre-downloader
+│   ├── tests/                         # Automated unit & integration tests
+│   ├── .env                           # Local environment configuration
+│   ├── .env.example                   # Template for .env
+│   ├── requirements.txt               # Backend Python dependencies
+│   ├── CrawlRAG.postman_collection.json # Complete Postman API collection
+│   └── README.md                      # Backend specific documentation
+│
 ├── frontend/                          # 🎨 Modern React + Vite AI Dashboard
 │   ├── src/
 │   │   ├── components/                # Header, Sidebar, ChatArea, SourceCard, Stepper
 │   │   ├── api/client.js              # FastAPI connector client
 │   │   ├── index.css                  # Obsidian Glassmorphism design system
 │   │   └── App.jsx                    # Root state & workflow coordinator
-│   ├── package.json
-│   └── vite.config.js                 # Proxy config to FastAPI backend
-├── data/
-│   ├── scraped/                       # Raw scraped JSON files (one per page)
-│   ├── clean_data/                    # Cleaned JSON files
-│   ├── chunked_data/                  # Chunked JSON files
-│   └── vector_store/                  # vector_index.npy + metadata.json
-├── models/
-│   ├── embeddings/                    # Cached BAAI/bge-small-en-v1.5 model files
-│   └── llm/                           # Cached Qwen2.5-1.5B-Instruct files
-├── logs/
-│   └── crawlrag.log                   # Rotating application log (10MB × 5)
-├── tests/
-│   └── test_scraping_module.py
-├── .env                               # Local environment configuration
-├── .env.example                       # Template for .env
-├── requirements.txt
-└── CrawlRAG.postman_collection.json
+│   ├── package.json                   # Frontend dependencies
+│   ├── vite.config.js                 # Dev server & reverse proxy to backend
+│   └── README.md                      # Frontend specific documentation
+│
+└── README.md                          # Root project documentation
 ```
 
 ---
@@ -183,40 +176,53 @@ data-scraping/
 
 ### Prerequisites
 - **Python 3.11+**
+- **Node.js 18+** & **npm**
 - **pip** (latest)
 - **Git**
 
-### Step 1 — Clone & Create Virtual Environment
+---
+
+### 1️⃣ Start the Backend (FastAPI + AI RAG)
+
+In your first terminal:
 
 ```powershell
-git clone <repo-url>
-cd data-scraping
+# Navigate into backend directory
+cd backend
 
+# Create & activate virtual environment
 python -m venv venv
 .\venv\Scripts\activate
-```
 
-### Step 2 — Install Python Dependencies
-
-```powershell
+# Install Python requirements & Playwright browser
 pip install -r requirements.txt
-```
-
-### Step 3 — Install Playwright Browser
-
-Playwright needs a headless Chromium browser to render JavaScript / React pages.
-
-```powershell
 playwright install chromium
+
+# Start the FastAPI Server
+uvicorn app.main:app --reload --port 8000
 ```
 
-### Step 4 — Configure Environment
+* **Swagger API Docs:** [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs)
+* **Backend Health:** [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health)
 
-Copy the example env file and edit as needed:
+---
+
+### 2️⃣ Start the Frontend (React AI Dashboard)
+
+In a second terminal:
 
 ```powershell
-copy .env.example .env
+# Navigate into frontend directory
+cd frontend
+
+# Install npm dependencies (first time only)
+npm install
+
+# Start the Vite dev server
+npm run dev
 ```
+
+* **Web UI Dashboard:** 👉 **[http://localhost:5173](http://localhost:5173)**
 
 The defaults in `.env` work out of the box. Key values:
 
