@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { Globe, Settings, Play, Database, RefreshCw, ChevronDown, ChevronUp, CheckCircle2 } from 'lucide-react';
+import { Settings, Play, RefreshCw, ChevronDown, ChevronUp, CheckCircle2, Globe2 } from 'lucide-react';
+import { Icon3DCrawler, Icon3DDatabase, Icon3DSparkles } from './Icons3D';
 import PipelineStepper from './PipelineStepper';
 
 export default function Sidebar({
-  onIngestComplete,
   pipelineStatus,
   onRefreshStatus,
   isIngesting,
@@ -36,27 +36,35 @@ export default function Sidebar({
   return (
     <aside className="sidebar">
       {/* Card 1: Ingest Website */}
-      <div className="card">
+      <div className="card-3d">
         <div className="card-title">
-          <Globe size={16} color="#818cf8" />
-          <span>Ingest New Website</span>
+          <Icon3DCrawler size={28} glow={true} />
+          <span>Ingest & Index Target</span>
         </div>
 
         <form onSubmit={handleSubmit}>
           <div className="form-group">
             <label className="form-label" htmlFor="target-url">
-              Target Website URL
+              Website URL to Crawl
             </label>
-            <input
-              id="target-url"
-              type="url"
-              required
-              className="input-text"
-              placeholder="https://example.com"
-              value={url}
-              onChange={(e) => setUrl(e.target.value)}
-              disabled={isIngesting}
-            />
+            <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+              <input
+                id="target-url"
+                type="url"
+                required
+                className="input-text"
+                placeholder="https://example.com"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                disabled={isIngesting}
+                style={{ paddingLeft: 34 }}
+              />
+              <Globe2
+                size={16}
+                color="#818cf8"
+                style={{ position: 'absolute', left: 10, pointerEvents: 'none' }}
+              />
+            </div>
 
             <div className="preset-chips">
               {presets.map((preset) => (
@@ -74,14 +82,14 @@ export default function Sidebar({
           </div>
 
           {/* Collapsible Advanced Settings */}
-          <div style={{ marginBottom: 12 }}>
+          <div style={{ marginBottom: 14 }}>
             <button
               type="button"
               className="settings-toggle"
               onClick={() => setShowAdvanced(!showAdvanced)}
             >
               <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Settings size={13} />
+                <Settings size={13} color="#94a3b8" />
                 <span>Crawl Configuration</span>
               </span>
               {showAdvanced ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
@@ -132,11 +140,15 @@ export default function Sidebar({
 
           <button
             type="submit"
-            className="btn-primary"
+            className="btn-primary-3d"
             disabled={isIngesting || !url.trim()}
           >
-            <Play size={14} />
-            <span>{isIngesting ? 'Ingesting Website...' : '1-Click Ingest & Index'}</span>
+            {isIngesting ? (
+              <RefreshCw size={16} className="animate-spin" />
+            ) : (
+              <Play size={16} fill="#ffffff" />
+            )}
+            <span>{isIngesting ? 'Ingesting & Indexing...' : '1-Click Ingest & Index'}</span>
           </button>
         </form>
 
@@ -146,41 +158,40 @@ export default function Sidebar({
       </div>
 
       {/* Card 2: Knowledge Base Metrics */}
-      <div className="card">
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+      <div className="card-3d">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
           <div className="card-title" style={{ marginBottom: 0 }}>
-            <Database size={16} color="#34d399" />
-            <span>Knowledge Base Stats</span>
+            <Icon3DDatabase size={24} glow={true} />
+            <span>Vector Knowledge Base</span>
           </div>
 
           <button
             type="button"
             className="btn-secondary"
-            style={{ padding: '4px 8px', fontSize: 11 }}
             onClick={onRefreshStatus}
             title="Refresh status from backend"
           >
             <RefreshCw size={11} />
-            <span>Refresh</span>
+            <span>Sync</span>
           </button>
         </div>
 
-        <div className="stats-grid">
-          <div className="stat-box">
+        <div className="stats-grid-3d">
+          <div className="stat-box-3d">
             <div className="stat-value">{pipelineStatus?.scraped_document_count ?? 0}</div>
             <div className="stat-label">Scraped Pages</div>
           </div>
-          <div className="stat-box">
+          <div className="stat-box-3d">
             <div className="stat-value">{pipelineStatus?.chunked_document_count ?? 0}</div>
             <div className="stat-label">Chunked Docs</div>
           </div>
-          <div className="stat-box">
+          <div className="stat-box-3d">
             <div className="stat-value" style={{ color: '#818cf8' }}>
               {pipelineStatus?.vector_count ?? 0}
             </div>
-            <div className="stat-label">Total Vectors</div>
+            <div className="stat-label">Indexed Vectors</div>
           </div>
-          <div className="stat-box">
+          <div className="stat-box-3d">
             <div className="stat-value" style={{ color: '#34d399' }}>
               {pipelineStatus?.embedding_dimension ?? 384}d
             </div>
@@ -188,7 +199,7 @@ export default function Sidebar({
           </div>
         </div>
 
-        <div style={{ marginTop: 12, fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ marginTop: 14, fontSize: 11, color: 'var(--text-muted)', display: 'flex', alignItems: 'center', gap: 6 }}>
           <CheckCircle2 size={13} color="#10b981" />
           <span>Local Index: <code>data/vector_store/</code></span>
         </div>
