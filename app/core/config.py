@@ -81,8 +81,8 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # Embedding model
     # ------------------------------------------------------------------
-    DEFAULT_EMBEDDING_MODEL: str = "sentence-transformers/all-MiniLM-L6-v2"
-    EMBEDDING_DIMENSION: int = 384          # all-MiniLM-L6-v2 output dim
+    DEFAULT_EMBEDDING_MODEL: str = "BAAI/bge-small-en-v1.5"
+    EMBEDDING_DIMENSION: int = 384          # bge-small-en-v1.5 output dim
 
     # ------------------------------------------------------------------
     # Chunking defaults  (tuned for retrieval accuracy)
@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------
     # LLM / generation defaults
     # ------------------------------------------------------------------
-    DEFAULT_LLM_MODEL: str = "Qwen/Qwen2.5-0.5B-Instruct"
+    DEFAULT_LLM_MODEL: str = "Qwen/Qwen2.5-1.5B-Instruct"
     LLM_MAX_NEW_TOKENS: int = 512           # enough for complete answers
     LLM_TEMPERATURE: float = 0.1            # low = factual; 0.0 = fully deterministic
 

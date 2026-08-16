@@ -56,7 +56,7 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │                    STAGE 4 — DENSE EMBEDDINGS                        │
 │                                                                      │
-│  Chunk texts  ──►  sentence-transformers/all-MiniLM-L6-v2            │
+│  Chunk texts  ──►  BAAI/bge-small-en-v1.5                            │
 │    ├── 384-dimensional L2-normalised float32 vectors                 │
 │    ├── Cached locally in  models/embeddings/                         │
 │    └── Output  →  data/vector_store/vector_index.npy                │
@@ -67,10 +67,10 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │                   STAGE 5 — HYBRID RETRIEVAL                         │
 │                                                                      │
-│  User query  ──►  Embed query (all-MiniLM-L6-v2)                    │
+│  User query  ──►  Embed query (BAAI/bge-small-en-v1.5)              │
 │               ──►  Cosine similarity (numpy dot product)             │
 │               ──►  + Keyword/phrase boost on chunk text & title      │
-│               ──►  Optional: LLM query reframing (Qwen2.5-0.5B)     │
+│               ──►  Optional: LLM query reframing (Qwen2.5-1.5B)     │
 │               ──►  Top-K ranked results                              │
 └──────────────────────────────────────────────────────────────────────┘
                                │
@@ -78,7 +78,7 @@
 ┌──────────────────────────────────────────────────────────────────────┐
 │                  STAGE 6 — GROUNDED ANSWER GENERATION                │
 │                                                                      │
-│  Retrieved chunks  ──►  Qwen/Qwen2.5-0.5B-Instruct (local LLM)      │
+│  Retrieved chunks  ──►  Qwen/Qwen2.5-1.5B-Instruct (local LLM)      │
 │    ├── System prompt enforces: factual, no hallucination, no         │
 │    │   meta-commentary ("Based on the context…")                     │
 │    ├── max_new_tokens = 512, temperature = 0.1                       │
@@ -94,12 +94,12 @@
 
 | Component | Model | Size | Purpose | Cached At |
 |---|---|---|---|---|
-| **Embeddings** | `sentence-transformers/all-MiniLM-L6-v2` | ~90 MB | 384-dim dense vector embeddings for semantic similarity | `models/embeddings/` |
-| **LLM** | `Qwen/Qwen2.5-0.5B-Instruct` | ~1 GB | Instruction-tuned causal LLM for grounded answer generation and query reframing | `models/llm/` |
+| **Embeddings** | `BAAI/bge-small-en-v1.5` | ~130 MB | Top-tier 384-dim dense vector embeddings for semantic similarity | `models/embeddings/` |
+| **LLM** | `Qwen/Qwen2.5-1.5B-Instruct` | ~3 GB | Instruction-tuned causal LLM for high-accuracy grounded answer generation and query reframing | `models/llm/` |
 
 ### Why these models?
-- **all-MiniLM-L6-v2**: Industry-standard free embedding model. Fast on CPU, high semantic accuracy, perfect for retrieval tasks. Produces L2-normalised 384-dim vectors enabling fast cosine similarity via dot product.
-- **Qwen2.5-0.5B-Instruct**: Smallest instruction-tuned model that can follow factual system prompts reliably. Runs on CPU without a GPU. Zero API cost.
+- **BAAI/bge-small-en-v1.5**: One of the highest scoring small embedding models on the Massive Text Embedding Benchmark (MTEB). Produces 384-dim normalized vectors that drastically improve context retrieval over standard MiniLM models.
+- **Qwen2.5-1.5B-Instruct**: A massive jump in reasoning, instruction-following, and multi-fact extraction capability compared to 0.5B models, while still lightweight enough to run smoothly on local CPU/GPU without cloud dependencies.
 
 ---
 

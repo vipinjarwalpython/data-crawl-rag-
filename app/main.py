@@ -62,8 +62,8 @@ app = FastAPI(
     title=settings.APP_NAME,
     description=(
         "**CrawlRAG** — High-performance web scraping, recursive BFS crawling, "
-        "semantic chunking, dense embedding (all-MiniLM-L6-v2), vector search, "
-        "and grounded RAG answer generation with local Qwen2.5-0.5B-Instruct."
+        "semantic chunking, dense embedding (BAAI/bge-small-en-v1.5), vector search, "
+        "and grounded RAG answer generation with local Qwen2.5-1.5B-Instruct."
     ),
     version="0.2.0",
     docs_url="/docs",
@@ -107,10 +107,10 @@ async def root():
         "active_modules": {
             "scraping": "Web scraping, BFS recursive crawler, JSON document storage (Active)",
             "rag_pipeline": (
-                "Text cleaning, recursive chunking, all-MiniLM-L6-v2 embeddings, "
+                "Text cleaning, recursive chunking, BAAI/bge-small-en-v1.5 embeddings, "
                 "vector store search (Active)"
             ),
-            "rag_answer": "Grounded RAG answer generation with Qwen2.5-0.5B-Instruct (Active)",
+            "rag_answer": "Grounded RAG answer generation with Qwen2.5-1.5B-Instruct (Active)",
         },
         "key_endpoints": {
             "scrape": f"{settings.API_V1_PREFIX}/scraping/scrape",

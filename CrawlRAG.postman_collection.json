@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "name": "CrawlRAG — Full API Collection",
-    "description": "Complete Postman collection for CrawlRAG v0.2.0.\n\nEnd-to-end flow:\n  1. Scrape website  (POST /scraping/scrape)\n  2. Build RAG index (POST /rag/embed-all) — runs clean → chunk → embed in one call\n  3. Check status    (GET  /rag/status)\n  4. Search chunks   (POST /rag/search)\n  5. Get LLM answer  (POST /rag/answer)\n\nModels used:\n  • Embeddings: sentence-transformers/all-MiniLM-L6-v2 (384-dim, ~90 MB)\n  • LLM:        Qwen/Qwen2.5-0.5B-Instruct (~1 GB, runs on CPU)\n\nBase URL variable: {{base_url}} = http://127.0.0.1:8000",
+    "description": "Complete Postman collection for CrawlRAG v0.2.0.\n\nEnd-to-end flow:\n  1. Scrape website  (POST /scraping/scrape)\n  2. Build RAG index (POST /rag/embed-all) — runs clean → chunk → embed in one call\n  3. Check status    (GET  /rag/status)\n  4. Search chunks   (POST /rag/search)\n  5. Get LLM answer  (POST /rag/answer)\n\nModels used:\n  • Embeddings: BAAI/bge-small-en-v1.5 (384-dim, ~130 MB, high MTEB benchmark score)\n  • LLM:        Qwen/Qwen2.5-1.5B-Instruct (~3 GB, instruction-tuned reasoning)\n\nBase URL variable: {{base_url}} = http://127.0.0.1:8000",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
