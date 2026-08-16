@@ -30,12 +30,13 @@ export async function fetchPipelineStatus() {
 export async function startWebsiteCrawl(options) {
   const payload = {
     url: options.url,
-    max_depth: Number(options.maxDepth || 2),
-    max_pages: Number(options.maxPages || 25),
+    max_depth: Number(options.maxDepth ?? 1),
+    max_pages: Number(options.maxPages ?? 15),
     render_js: Boolean(options.renderJs ?? true),
-    wait_seconds: 2.0,
+    wait_seconds: 1.0,
     concurrency: 3,
-    delay_seconds: 0.5,
+    delay_seconds: 0.2,
+    crawl_external_links: false,
     force_refresh: Boolean(options.forceRefresh || false),
   };
 

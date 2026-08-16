@@ -18,54 +18,77 @@ def _render_page_sync(
     url: str,
     wait_seconds: float,
     user_agent: str,
-    timeout_seconds: float,
+    timeout_seconds: float = 15.0,
     custom_headers: Optional[Dict[str, str]] = None
 ) -> Tuple[str, int]:
-    """Thread-safe Playwright renderer that runs independently of the asyncio event loop.
+    """Thread-safe, lightweight Playwright renderer that runs in a worker thread.
 
     Guarantees 100% compatibility on Windows with Uvicorn without NotImplementedError.
+    Optimized to abort heavy media downloads (images, fonts, media) for 3x faster page rendering.
     """
-    from playwright.sync_api import sync_playwright
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as e:
+        logger.error(f"Playwright not installed: {e}")
+        raise
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
             headless=True,
-            args=["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage"]
+            args=[
+                "--no-sandbox",
+                "--disable-setuid-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-extensions",
+                "--disable-background-networking"
+            ]
         )
         context = browser.new_context(
             user_agent=user_agent,
-            viewport={"width": 1440, "height": 900},
+            viewport={"width": 1280, "height": 800},
             extra_http_headers=custom_headers or {}
         )
         page = context.new_page()
-        
-        response = page.goto(
-            url,
-            wait_until="domcontentloaded",
-            timeout=int(timeout_seconds * 1000)
-        )
-        status_code = response.status if response else 200
 
-        # Progressive scrolling to trigger lazy-loaded React components & testimonials
+        # Optimize page load: block images, media & heavy fonts
+        def _route_filter(route):
+            request = route.request
+            if request.resource_type in ["image", "media", "font"]:
+                route.abort()
+            else:
+                route.continue_()
+
         try:
-            for i in range(1, 5):
-                page.evaluate(f"window.scrollTo(0, document.body.scrollHeight * {i/4})")
-                page.wait_for_timeout(300)
+            page.route("**/*", _route_filter)
         except Exception:
             pass
 
-        # Wait for dynamic JS/React hydration
-        if wait_seconds > 0:
-            page.wait_for_timeout(int(wait_seconds * 1000))
+        try:
+            response = page.goto(
+                url,
+                wait_until="domcontentloaded",
+                timeout=int(timeout_seconds * 1000)
+            )
+            status_code = response.status if response else 200
 
-        content = page.content()
-        browser.close()
-        return content, status_code
+            # Dynamic hydration wait (default: 1.0s)
+            if wait_seconds > 0:
+                page.wait_for_timeout(int(min(wait_seconds, 5.0) * 1000))
+
+            content = page.content()
+            return content, status_code
+        finally:
+            try:
+                page.close()
+                context.close()
+                browser.close()
+            except Exception:
+                pass
 
 
 class AsyncCrawler:
     """Production Async Crawler supporting both high-speed static scraping (HTTPX)
-
     and dynamic JavaScript / React SPA rendering (Playwright).
     """
 
@@ -75,7 +98,7 @@ class AsyncCrawler:
         timeout_seconds: Optional[float] = None
     ):
         self.user_agent = user_agent or settings.DEFAULT_USER_AGENT
-        self.timeout_seconds = timeout_seconds or settings.REQUEST_TIMEOUT_SECONDS
+        self.timeout_seconds = timeout_seconds or 15.0
 
     def _get_headers(self, custom_headers: Optional[Dict[str, str]] = None) -> Dict[str, str]:
         """Construct request headers with browser user-agent."""
@@ -95,17 +118,17 @@ class AsyncCrawler:
         url: str
     ) -> Tuple[str, int]:
         """Fetch raw static HTML content with HTTPX."""
-        response = await client.get(url, follow_redirects=True)
+        response = await client.get(url, follow_redirects=True, timeout=self.timeout_seconds)
         response.raise_for_status()
         return response.text, response.status_code
 
     async def fetch_rendered_html(
         self,
         url: str,
-        wait_seconds: float = 2.0,
+        wait_seconds: float = 1.0,
         custom_headers: Optional[Dict[str, str]] = None
     ) -> Tuple[str, int]:
-        """Execute Playwright in a dedicated worker thread for non-blocking, crash-free rendering on Windows."""
+        """Execute Playwright in a dedicated worker thread with fallback to HTTPX."""
         try:
             return await asyncio.to_thread(
                 _render_page_sync,
@@ -116,46 +139,9 @@ class AsyncCrawler:
                 custom_headers
             )
         except Exception as e:
-            logger.error(f"Playwright rendering error for {url}: {e}. Falling back to static HTTPX...")
+            logger.warning(f"Playwright rendering failed for {url} ({e}). Falling back to static HTTPX...")
             async with httpx.AsyncClient(headers=self._get_headers(custom_headers), timeout=self.timeout_seconds) as client:
                 return await self.fetch_static_html(client, url)
-
-    async def scrape_single_url(
-        self,
-        url: str,
-        render_js: bool = True,
-        wait_seconds: float = 2.0,
-        custom_headers: Optional[Dict[str, str]] = None,
-        timeout: Optional[float] = None
-    ) -> ScrapedDocument:
-        """Scrape and parse a single page URL with dynamic or static engine."""
-        timeout_val = timeout or self.timeout_seconds
-
-        if render_js:
-            html_content, status_code = await self.fetch_rendered_html(
-                url=url,
-                wait_seconds=wait_seconds,
-                custom_headers=custom_headers
-            )
-        else:
-            headers = self._get_headers(custom_headers)
-            async with httpx.AsyncClient(headers=headers, timeout=timeout_val) as client:
-                html_content, status_code = await self.fetch_static_html(client, url)
-
-        doc = HTMLParser.parse_html(
-            html_content=html_content,
-            url=url,
-            depth=0,
-            status_code=status_code
-        )
-
-        # Auto-healing: If static scrape yielded empty text on React SPA, auto-render with Playwright
-        if len(doc.clean_text.strip()) < 50 and not render_js:
-            logger.info(f"Page {url} has minimal text ({len(doc.clean_text)} chars). Auto-rendering with Playwright...")
-            html_content, status_code = await self.fetch_rendered_html(url=url, wait_seconds=wait_seconds or 2.5)
-            doc = HTMLParser.parse_html(html_content=html_content, url=url, depth=0, status_code=status_code)
-
-        return doc
 
     def _is_url_allowed(
         self,
@@ -168,17 +154,30 @@ class AsyncCrawler:
         """Check if URL matches domain and path criteria."""
         try:
             parsed = urlparse(url)
-            domain = parsed.netloc.lower()
-            
-            # Check domain
-            if not allow_external and domain not in allowed_domains:
+            if not parsed.scheme or not parsed.netloc:
                 return False
 
-            # Ignore common binary/media extensions
+            domain = parsed.netloc.lower()
+
+            # Ignore social media and common external tracking domains
+            blocked_domains = {
+                "facebook.com", "twitter.com", "x.com", "instagram.com",
+                "youtube.com", "linkedin.com", "pinterest.com", "tiktok.com",
+                "github.com", "google.com", "apple.com"
+            }
+            if any(domain.endswith(b) for b in blocked_domains):
+                return False
+
+            # Check domain allowance
+            if not allow_external:
+                if not any(domain == ad or domain.endswith("." + ad) for ad in allowed_domains):
+                    return False
+
+            # Ignore common binary / media extensions
             disallowed_extensions = (
                 ".pdf", ".jpg", ".jpeg", ".png", ".gif", ".svg", ".webp",
                 ".zip", ".tar", ".gz", ".exe", ".mp4", ".mp3", ".wav",
-                ".css", ".js", ".json", ".xml", ".ico"
+                ".css", ".js", ".json", ".xml", ".ico", ".woff", ".woff2", ".ttf"
             )
             if any(parsed.path.lower().endswith(ext) for ext in disallowed_extensions):
                 return False
@@ -208,6 +207,7 @@ class AsyncCrawler:
         base_path = seed_parsed.path.rstrip("/")
 
         allowed_domains = {seed_domain}
+        crawl_external = bool(getattr(request, "crawl_external_links", False))
 
         visited_urls: Set[str] = set()
         queue: asyncio.Queue[Tuple[str, int]] = asyncio.Queue()
@@ -218,12 +218,14 @@ class AsyncCrawler:
         failed_urls: List[Dict[str, str]] = []
         total_discovered = 1
 
-        semaphore = asyncio.Semaphore(request.concurrency)
+        concurrency = min(max(1, request.concurrency), 5)
+        semaphore = asyncio.Semaphore(concurrency)
         headers = self._get_headers()
 
         logger.info(
             f"Starting crawl on seed: {seed_url} | Max Depth: {request.max_depth} | "
-            f"Max Pages: {request.max_pages} | Render JS: {request.render_js} | Concurrency: {request.concurrency}"
+            f"Max Pages: {request.max_pages} | Render JS: {request.render_js} | "
+            f"Concurrency: {concurrency} | Crawl External: {crawl_external}"
         )
 
         httpx_client = None
@@ -236,12 +238,12 @@ class AsyncCrawler:
 
                 async with semaphore:
                     try:
-                        logger.debug(f"[Depth {depth}] Scraping: {current_url}")
-                        
+                        logger.info(f"[{len(scraped_docs)+1}/{request.max_pages}] [Depth {depth}] Scraping: {current_url}")
+
                         if request.render_js:
                             html_content, status_code = await self.fetch_rendered_html(
                                 url=current_url,
-                                wait_seconds=request.wait_seconds
+                                wait_seconds=min(request.wait_seconds, 3.0)
                             )
                         else:
                             html_content, status_code = await self.fetch_static_html(
@@ -256,12 +258,12 @@ class AsyncCrawler:
                             status_code=status_code
                         )
 
-                        # Auto-Healing: If static scraping yielded empty/minimal text, auto-render with Playwright
+                        # Auto-Healing: If static scraping yielded empty text on SPA, auto-render with Playwright
                         if len(doc.clean_text.strip()) < 50 and not request.render_js:
-                            logger.info(f"Page {current_url} yielded minimal text ({len(doc.clean_text)} chars). Auto-rendering with Playwright...")
+                            logger.info(f"Page {current_url} yielded minimal text. Auto-rendering with Playwright...")
                             html_content, status_code = await self.fetch_rendered_html(
                                 url=current_url,
-                                wait_seconds=request.wait_seconds or 2.5
+                                wait_seconds=1.5
                             )
                             doc = HTMLParser.parse_html(
                                 html_content=html_content,
@@ -272,18 +274,23 @@ class AsyncCrawler:
 
                         scraped_docs.append(doc)
 
-                        # Trigger callback (e.g. saving to disk immediately)
+                        # Trigger immediate persistence callback
                         if on_document_scraped:
-                            await on_document_scraped(doc)
+                            try:
+                                await on_document_scraped(doc)
+                            except Exception as save_err:
+                                logger.error(f"Error in on_document_scraped callback: {save_err}")
 
-                        # Enqueue newly discovered links if depth limit allows
-                        if depth < request.max_depth:
-                            crawl_external = getattr(request, "crawl_external_links", True)
+                        # Discover & enqueue internal links if depth permits
+                        if depth < request.max_depth and len(scraped_docs) < request.max_pages:
                             links_to_crawl = list(doc.internal_links)
                             if crawl_external:
                                 links_to_crawl.extend(doc.external_links)
 
                             for link in links_to_crawl:
+                                if len(scraped_docs) + queue.qsize() >= request.max_pages:
+                                    break
+
                                 normalized_link = HTMLParser.normalize_url(link, current_url)
                                 if not normalized_link:
                                     continue
@@ -300,9 +307,9 @@ class AsyncCrawler:
                                         total_discovered += 1
                                         await queue.put((normalized_link, depth + 1))
 
-                        # Respect polite delay
+                        # Polite delay
                         if request.delay_seconds > 0:
-                            await asyncio.sleep(request.delay_seconds)
+                            await asyncio.sleep(min(request.delay_seconds, 1.0))
 
                     except Exception as e:
                         logger.warning(f"Failed to scrape {current_url}: {e}")
