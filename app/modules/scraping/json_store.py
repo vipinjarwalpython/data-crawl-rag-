@@ -4,19 +4,17 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 import aiofiles
 from app.core.config import settings
-from app.core.logging import logger
+from app.core.logging import get_module_logger
 from app.modules.scraping.schemas import ScrapedDocument, ScrapedDocumentSummary
+
+logger = get_module_logger(__name__)
 
 
 class JSONStore:
     """Production JSON Storage Manager for scraped web documents."""
 
-    def __init__(self, storage_dir: Optional[Path] = None):
-        self.storage_dir = storage_dir or (
-            settings.BASE_DIR / settings.SCRAPED_DIR
-            if not settings.SCRAPED_DIR.is_absolute()
-            else settings.SCRAPED_DIR
-        )
+    def __init__(self, storage_dir: Optional[Path] = None) -> None:
+        self.storage_dir = storage_dir or settings.resolve_path(settings.SCRAPED_DIR)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
 
     def _get_file_path(self, doc_id: str) -> Path:

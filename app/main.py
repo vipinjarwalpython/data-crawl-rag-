@@ -1,7 +1,16 @@
+"""
+CrawlRAG — FastAPI application entry point.
+
+Registers routers, CORS middleware, lifespan hooks, and global exception
+handling.  The application description is kept up-to-date with the actual
+live pipeline status.
+"""
+
 import sys
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-# Ensure Windows Proactor event loop policy for subprocess execution
+# Windows: Proactor event loop is required for Playwright subprocess compatibility.
 if sys.platform == "win32":
     import asyncio
     try:
@@ -15,34 +24,58 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.logging import logger
-from app.modules.scraping.router import router as scraping_router
 from app.modules.rag.router import router as rag_router
+from app.modules.scraping.router import router as scraping_router
 
+
+# ---------------------------------------------------------------------------
+# Application lifespan
+# ---------------------------------------------------------------------------
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager for startup and shutdown routines."""
-    logger.info(f"Starting {settings.APP_NAME} in {settings.APP_ENV} mode...")
-    settings.ensure_directories()
-    logger.info(f"Storage directories initialized: {settings.SCRAPED_DIR}")
-    yield
-    logger.info(f"Shutting down {settings.APP_NAME}...")
+    """Run startup and shutdown tasks around the application's lifetime."""
+    log_dir = settings.resolve_path(settings.LOG_DIR)
+    log_file = log_dir / "crawlrag.log"
 
+    logger.info(
+        "Starting %s v0.2.0 (%s mode). Log file: %s.",
+        settings.APP_NAME,
+        settings.APP_ENV,
+        log_file,
+    )
+    settings.ensure_directories()
+    logger.info(
+        "Storage directories verified: scraped='%s', vector_store='%s'.",
+        settings.resolve_path(settings.SCRAPED_DIR),
+        settings.resolve_path(settings.VECTOR_STORE_DIR),
+    )
+    yield
+    logger.info("Shutting down %s.", settings.APP_NAME)
+
+
+# ---------------------------------------------------------------------------
+# FastAPI application
+# ---------------------------------------------------------------------------
 
 app = FastAPI(
     title=settings.APP_NAME,
     description=(
-        "**CrawlRAG**: High-Performance Web Scraping, Recursive Crawling, "
-        "and JSON Data Extraction Engine for RAG Pipelines and AI Chatbots."
+        "**CrawlRAG** — High-performance web scraping, recursive BFS crawling, "
+        "semantic chunking, dense embedding (all-MiniLM-L6-v2), vector search, "
+        "and grounded RAG answer generation with local Qwen2.5-0.5B-Instruct."
     ),
-    version="0.1.0",
+    version="0.2.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
-# CORS Middleware configuration
+# ---------------------------------------------------------------------------
+# Middleware
+# ---------------------------------------------------------------------------
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -51,52 +84,89 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register API Routers
+# ---------------------------------------------------------------------------
+# Routers
+# ---------------------------------------------------------------------------
+
 app.include_router(scraping_router, prefix=settings.API_V1_PREFIX)
 app.include_router(rag_router, prefix=settings.API_V1_PREFIX)
 
 
+# ---------------------------------------------------------------------------
+# Root & health endpoints
+# ---------------------------------------------------------------------------
+
 @app.get("/", tags=["Health & Info"])
 async def root():
-    """Root metadata endpoint."""
+    """API metadata and module status overview."""
     return {
         "app_name": settings.APP_NAME,
-        "version": "0.1.0",
+        "version": "0.2.0",
         "status": "online",
         "docs_url": "/docs",
-        "modules": {
-            "module_1": "Web Scraping, Recursive Crawler & JSON Storage (Active)",
-            "module_2": "Text Cleaning, Recursive Chunking, all-MiniLM-L6-v2 Embeddings & Vector DB Search (Active)",
-            "module_3": "RAG Chatbot Pipeline (Planned)"
-        }
+        "active_modules": {
+            "scraping": "Web scraping, BFS recursive crawler, JSON document storage (Active)",
+            "rag_pipeline": (
+                "Text cleaning, recursive chunking, all-MiniLM-L6-v2 embeddings, "
+                "vector store search (Active)"
+            ),
+            "rag_answer": "Grounded RAG answer generation with Qwen2.5-0.5B-Instruct (Active)",
+        },
+        "key_endpoints": {
+            "scrape": f"{settings.API_V1_PREFIX}/scraping/scrape",
+            "embed_all": f"{settings.API_V1_PREFIX}/rag/embed-all",
+            "search": f"{settings.API_V1_PREFIX}/rag/search",
+            "answer": f"{settings.API_V1_PREFIX}/rag/answer",
+            "status": f"{settings.API_V1_PREFIX}/rag/status",
+        },
     }
 
 
 @app.get("/health", tags=["Health & Info"])
 async def health_check():
-    """Health check endpoint for container orchestrators and monitoring."""
+    """Health-check endpoint for container orchestrators and uptime monitors."""
+    log_file_path = settings.resolve_path(settings.LOG_DIR) / "crawlrag.log"
     return {
         "status": "healthy",
         "environment": settings.APP_ENV,
-        "scraped_directory": str(settings.SCRAPED_DIR)
+        "debug_mode": settings.DEBUG,
+        "log_file": str(log_file_path) if log_file_path.exists() else "not yet created",
+        "scraped_dir": str(settings.resolve_path(settings.SCRAPED_DIR)),
+        "vector_store_dir": str(settings.resolve_path(settings.VECTOR_STORE_DIR)),
     }
 
 
+# ---------------------------------------------------------------------------
+# Global exception handler
+# ---------------------------------------------------------------------------
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """Global unhandled exception catcher."""
-    logger.error(f"Unhandled server error at {request.url.path}: {exc}", exc_info=True)
+    """Catch-all handler for unhandled exceptions — logs and returns 500."""
+    logger.error(
+        "Unhandled server error at '%s': %s",
+        request.url.path,
+        exc,
+        exc_info=True,
+    )
     return JSONResponse(
         status_code=500,
-        content={"detail": "An internal server error occurred. Check logs for details."}
+        content={
+            "detail": "An internal server error occurred. Check server logs for details."
+        },
     )
 
 
+# ---------------------------------------------------------------------------
+# Direct execution
+# ---------------------------------------------------------------------------
+
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(
         "app.main:app",
         host=settings.HOST,
         port=settings.PORT,
-        reload=settings.DEBUG
+        reload=settings.DEBUG,
     )

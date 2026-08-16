@@ -1,9 +1,50 @@
-venv\
-.env\
-__pycache__\
-*.pyc
-data
-venv
-tests
-models
-kilo.jsonc
+# ==============================================================================
+# CrawlRAG - Git Ignore Configuration
+# ==============================================================================
+
+# 🐍 Python Virtual Environments
+venv/
+.venv/
+env/
+ENV/
+bin/
+lib/
+include/
+
+# 🐍 Python Compiler & Cache Files
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+
+# 📁 Local Storage & Data (Generated runtime data)
+data/*
+
+# 🤖 Downloaded Machine Learning Models
+models/*
+
+# 🔑 Environment Configurations & Secrets
+# Ignore local environment files containing credentials and settings
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# DO NOT ignore the env example template
+!.env.example
+
+# 💻 OS / IDE / Editor Specific Files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.suo
+*.user
+*.sln
+*.swp
+
+logs/*

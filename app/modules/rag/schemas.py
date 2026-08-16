@@ -1,49 +1,201 @@
-from typing import List, Optional
-from pydantic import BaseModel, Field
+"""
+Pydantic request/response schemas for the RAG pipeline endpoints.
 
+Design notes:
+- QueryNormalizerMixin is shared by all query schemas to avoid duplicating
+  the ``normalize_input`` validator.
+- Default thresholds and counts are pulled from ``settings`` so that tuning
+  one value in .env affects all endpoints at once.
+"""
+
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, computed_field, model_validator
+
+from app.core.config import settings
+
+
+# ---------------------------------------------------------------------------
+# Shared mixin
+# ---------------------------------------------------------------------------
+
+class QueryNormalizerMixin(BaseModel):
+    """Normalises the incoming ``query`` field from common alternative keys.
+
+    Accepts ``question``, ``prompt``, ``q``, ``input``, or ``text`` as
+    aliases for ``query`` so that callers do not need to know the exact
+    field name.
+    """
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalise_query_field(cls, raw_data: Any) -> Any:
+        """Remap alternative query-field names to ``query`` before validation."""
+        if not isinstance(raw_data, dict):
+            return raw_data
+
+        if not raw_data.get("query"):
+            for alternative_key in ("question", "prompt", "q", "input", "text"):
+                if raw_data.get(alternative_key):
+                    raw_data["query"] = raw_data[alternative_key]
+                    break
+
+        return raw_data
+
+
+# ---------------------------------------------------------------------------
+# Cleaning / chunking / embedding request schemas
+# ---------------------------------------------------------------------------
 
 class TextCleanRequest(BaseModel):
-    """Request model for cleaning a specific document or batch."""
-    doc_id: Optional[str] = Field(None, description="Specific document ID to clean. If omitted, cleans all scraped documents.")
-    remove_boilerplate: bool = Field(True, description="Remove common cookie banners, footers, navigation junk.")
-    min_paragraph_length: int = Field(20, description="Minimum character length for a text block to be retained.")
+    """Request body for cleaning a single document or all scraped documents."""
+
+    doc_id: Optional[str] = Field(
+        default=None,
+        description="Target document ID.  Omit to clean all scraped documents.",
+    )
+    remove_boilerplate: bool = Field(
+        default=True,
+        description="Strip cookie banners, nav noise, footers, and tracking text.",
+    )
+    min_paragraph_length: int = Field(
+        default=20,
+        ge=0,
+        description="Minimum character length for a text block to be retained.",
+    )
 
 
 class BatchCleanRequest(BaseModel):
-    """Request model for batch cleaning all scraped documents at once."""
-    remove_boilerplate: bool = Field(True, description="Remove common cookie banners, footers, navigation junk.")
-    min_paragraph_length: int = Field(20, description="Minimum character length for a text block to be retained.")
+    """Request body for batch-cleaning all scraped documents at once."""
+
+    remove_boilerplate: bool = Field(default=True, description="Strip boilerplate noise.")
+    min_paragraph_length: int = Field(
+        default=20,
+        ge=0,
+        description="Minimum character length for a text block to be retained.",
+    )
 
 
 class TextChunkRequest(BaseModel):
-    """Request model for recursive character chunking."""
-    doc_id: Optional[str] = Field(None, description="Specific processed document ID to chunk. If omitted, chunks all processed documents.")
-    chunk_size: int = Field(500, description="Maximum character length per chunk.")
-    chunk_overlap: int = Field(50, description="Character overlap between consecutive chunks.")
+    """Request body for recursive character chunking."""
+
+    doc_id: Optional[str] = Field(
+        default=None,
+        description="Target document ID.  Omit to chunk all cleaned documents.",
+    )
+    chunk_size: int = Field(
+        default=settings.DEFAULT_CHUNK_SIZE,
+        ge=100,
+        le=2000,
+        description="Maximum character length per chunk.",
+    )
+    chunk_overlap: int = Field(
+        default=settings.DEFAULT_CHUNK_OVERLAP,
+        ge=0,
+        le=500,
+        description="Character overlap between consecutive chunks.",
+    )
 
 
 class EmbedAndStoreRequest(BaseModel):
-    """Request model for generating embeddings and upserting into vector store."""
-    doc_id: Optional[str] = Field(None, description="Specific chunked document ID. If omitted, embeds all chunked documents.")
-    batch_size: int = Field(32, description="Batch size for embedding generation.")
+    """Request body for embedding a specific (or all) chunked document(s)."""
+
+    doc_id: Optional[str] = Field(
+        default=None,
+        description="Target document ID.  Omit to embed all chunked documents.",
+    )
+    batch_size: int = Field(
+        default=32,
+        ge=1,
+        le=256,
+        description="Embedding batch size (higher = faster but more RAM).",
+    )
 
 
 class BatchEmbedRequest(BaseModel):
-    """Request model for batch embedding and indexing all documents at once."""
-    batch_size: int = Field(32, description="Batch size for embedding generation.")
+    """Request body for batch-embedding and indexing all documents at once."""
+
+    batch_size: int = Field(
+        default=32,
+        ge=1,
+        le=256,
+        description="Embedding batch size.",
+    )
 
 
-class SearchQueryRequest(BaseModel):
-    """Request model for semantic vector similarity search."""
-    query: str = Field(..., description="Natural language search query.")
-    top_k: int = Field(5, description="Number of top matching chunks to return.")
-    score_threshold: Optional[float] = Field(None, description="Minimum similarity score threshold (0.0 to 1.0).")
-    reframe: bool = Field(False, description="Whether to reframe query using LLM for enhanced retrieval.")
-    temperature: float = Field(0.2, description="Temperature for LLM generation (0.0 for deterministic, higher for creativity).")
+# ---------------------------------------------------------------------------
+# Search / answer request schemas
+# ---------------------------------------------------------------------------
 
+class SearchQueryRequest(QueryNormalizerMixin):
+    """Request body for vector-store similarity search."""
+
+    query: str = Field(..., min_length=1, description="Natural language search query.")
+    top_k: int = Field(
+        default=settings.RETRIEVAL_TOP_K,
+        ge=1,
+        le=50,
+        description="Number of top-matching chunks to return.",
+    )
+    score_threshold: Optional[float] = Field(
+        default=settings.RETRIEVAL_SCORE_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        description="Minimum cosine similarity score (0–1).  None disables filtering.",
+    )
+    reframe: bool = Field(
+        default=False,
+        description="Reframe the query with the LLM before retrieval for better recall.",
+    )
+    temperature: float = Field(
+        default=settings.LLM_TEMPERATURE,
+        ge=0.0,
+        le=1.0,
+        description="LLM sampling temperature for query reframing.",
+    )
+
+
+class AnswerQueryRequest(QueryNormalizerMixin):
+    """Request body for grounded RAG answer generation."""
+
+    query: str = Field(..., min_length=1, description="Natural language question.")
+    top_k: int = Field(
+        default=settings.RETRIEVAL_TOP_K,
+        ge=1,
+        le=50,
+        description="Number of top context chunks to retrieve.",
+    )
+    score_threshold: Optional[float] = Field(
+        default=settings.RETRIEVAL_SCORE_THRESHOLD,
+        ge=0.0,
+        le=1.0,
+        description="Minimum similarity score for context chunks.",
+    )
+    reframe: bool = Field(
+        default=True,
+        description="Reframe the query with the LLM before retrieval.",
+    )
+    temperature: float = Field(
+        default=settings.LLM_TEMPERATURE,
+        ge=0.0,
+        le=1.0,
+        description="LLM sampling temperature for answer generation.",
+    )
+    max_new_tokens: int = Field(
+        default=settings.LLM_MAX_NEW_TOKENS,
+        ge=64,
+        le=2048,
+        description="Maximum tokens to generate in the answer.",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Response schemas
+# ---------------------------------------------------------------------------
 
 class SearchResultItem(BaseModel):
-    """Search result item matching user query."""
+    """A single chunk returned by vector-store search."""
+
     chunk_id: str
     doc_id: str
     url: str
@@ -53,27 +205,30 @@ class SearchResultItem(BaseModel):
     chunk_index: int
 
 
-class AnswerQueryRequest(BaseModel):
-    """Request model for RAG grounded answer generation."""
-    query: str = Field(..., description="Natural language question.")
-    top_k: int = Field(5, description="Number of top matching chunks to retrieve for context.")
-    score_threshold: Optional[float] = Field(0.3, description="Minimum similarity score threshold.")
-    reframe: bool = Field(True, description="Whether to reframe query using LLM for enhanced retrieval.")
-    temperature: float = Field(0.2, description="Temperature for LLM generation.")
-
-
 class AnswerResponse(BaseModel):
-    """Response model containing grounded LLM answer and retrieved source chunks."""
+    """Grounded LLM answer with retrieved source chunks."""
+
     query: str
     answer: str
     sources: List[SearchResultItem]
 
+    @computed_field  # type: ignore[misc]
+    @property
+    def sources_count(self) -> int:
+        """Number of source chunks used to generate the answer."""
+        return len(self.sources)
+
 
 class PipelineStatusResponse(BaseModel):
-    """Status metrics for processing & vector store."""
-    scraped_count: int
-    clean_data_count: int
-    chunked_data_count: int
-    vector_count: int
-    embedding_model: str
-    model_cached_locally: bool
+    """Pipeline health and data-volume metrics."""
+
+    scraped_document_count: int = Field(description="Number of raw scraped JSON files.")
+    cleaned_document_count: int = Field(description="Number of cleaned JSON files.")
+    chunked_document_count: int = Field(description="Number of chunked JSON files.")
+    vector_count: int = Field(description="Total vectors in the store.")
+    embedding_dimension: int = Field(description="Embedding model output dimension.")
+    embedding_model: str = Field(description="Name of the active embedding model.")
+    embedding_model_cached_locally: bool = Field(description="Whether the embedding model is cached.")
+    llm_model: str = Field(description="Name of the active LLM.")
+    llm_model_cached_locally: bool = Field(description="Whether the LLM is cached locally.")
+    vector_store_stats: Dict[str, Any] = Field(description="Detailed vector store diagnostics.")

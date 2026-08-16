@@ -1,166 +1,296 @@
-from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
-from typing import List, Optional
+"""
+FastAPI router for the RAG pipeline endpoints.
 
+Each endpoint:
+- Logs the incoming request with key parameters
+- Measures and logs wall-clock execution time
+- Returns structured success/error responses
+"""
+
+import asyncio
+import time
+from typing import List
+
+from fastapi import APIRouter, HTTPException
+
+from app.core.logging import get_module_logger
+from app.modules.rag.embeddings import embedding_manager
 from app.modules.rag.schemas import (
-    TextCleanRequest,
-    BatchCleanRequest,
-    TextChunkRequest,
-    EmbedAndStoreRequest,
-    BatchEmbedRequest,
-    SearchQueryRequest,
-    SearchResultItem,
     AnswerQueryRequest,
     AnswerResponse,
-    PipelineStatusResponse
+    BatchCleanRequest,
+    BatchEmbedRequest,
+    EmbedAndStoreRequest,
+    PipelineStatusResponse,
+    SearchQueryRequest,
+    SearchResultItem,
+    TextChunkRequest,
+    TextCleanRequest,
 )
 from app.modules.rag.service import rag_service
-from app.modules.rag.embeddings import embedding_manager
-from app.core.logging import logger
 
+logger = get_module_logger(__name__)
 
 router = APIRouter(prefix="/rag", tags=["RAG Pipeline & Embeddings"])
 
 
-@router.post("/clean", summary="Clean Raw Scraped Data")
-async def clean_scraped_data(request: TextCleanRequest):
-    """Clean raw scraped JSON files and store cleaned text in `data/processed`."""
+# ---------------------------------------------------------------------------
+# Cleaning endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/clean", summary="Clean Raw Scraped Document(s)")
+async def clean_scraped_documents(request: TextCleanRequest):
+    """Clean raw scraped JSON files and write cleaned output to ``data/clean_data``."""
+    logger.info(
+        "[POST /rag/clean] doc_id=%s, remove_boilerplate=%s",
+        request.doc_id or "all",
+        request.remove_boilerplate,
+    )
+    start_time = time.perf_counter()
     try:
-        processed = await rag_service.clean_documents(
+        cleaned_docs = await rag_service.clean_documents(
             doc_id=request.doc_id,
             remove_boilerplate=request.remove_boilerplate,
-            min_paragraph_length=request.min_paragraph_length
+            min_paragraph_length=request.min_paragraph_length,
         )
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info("[POST /rag/clean] cleaned %d document(s) in %.3fs.", len(cleaned_docs), elapsed)
         return {
             "status": "success",
-            "message": f"Successfully cleaned {len(processed)} documents.",
-            "processed_count": len(processed)
+            "message": f"Successfully cleaned {len(cleaned_docs)} document(s).",
+            "processed_count": len(cleaned_docs),
+            "elapsed_seconds": elapsed,
         }
-    except Exception as e:
-        logger.error(f"Error in clean endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("[POST /rag/clean] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/clean-all", summary="Batch Clean All Scraped Documents at Once")
-async def clean_all_documents(request: BatchCleanRequest):
-    """Clean all stored scraped JSON files in a single batch operation."""
+@router.post("/clean-all", summary="Batch Clean All Scraped Documents")
+async def clean_all_scraped_documents(request: BatchCleanRequest):
+    """Batch-clean all stored scraped JSON files in a single operation."""
+    logger.info("[POST /rag/clean-all] remove_boilerplate=%s", request.remove_boilerplate)
+    start_time = time.perf_counter()
     try:
-        processed = await rag_service.clean_all_documents(
+        cleaned_docs = await rag_service.clean_all_documents(
             remove_boilerplate=request.remove_boilerplate,
-            min_paragraph_length=request.min_paragraph_length
+            min_paragraph_length=request.min_paragraph_length,
         )
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info("[POST /rag/clean-all] cleaned %d document(s) in %.3fs.", len(cleaned_docs), elapsed)
         return {
             "status": "success",
-            "message": f"Successfully batch cleaned {len(processed)} documents.",
-            "processed_count": len(processed)
+            "message": f"Successfully batch-cleaned {len(cleaned_docs)} document(s).",
+            "processed_count": len(cleaned_docs),
+            "elapsed_seconds": elapsed,
         }
-    except Exception as e:
-        logger.error(f"Error in clean-all endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("[POST /rag/clean-all] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/chunk", summary="Run Recursive Character Chunking")
-async def chunk_documents(request: TextChunkRequest):
-    """Chunk processed documents into semantic chunks with recursive character splitting."""
+# ---------------------------------------------------------------------------
+# Chunking endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/chunk", summary="Chunk Cleaned Document(s)")
+async def chunk_cleaned_documents(request: TextChunkRequest):
+    """Chunk cleaned documents into semantic text segments with recursive character splitting."""
+    logger.info(
+        "[POST /rag/chunk] doc_id=%s, chunk_size=%d, overlap=%d",
+        request.doc_id or "all",
+        request.chunk_size,
+        request.chunk_overlap,
+    )
+    start_time = time.perf_counter()
     try:
         chunks = await rag_service.chunk_documents(doc_id=request.doc_id)
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info("[POST /rag/chunk] generated %d chunk(s) in %.3fs.", len(chunks), elapsed)
         return {
             "status": "success",
-            "message": f"Successfully generated {len(chunks)} chunks.",
-            "total_chunks": len(chunks)
+            "message": f"Successfully generated {len(chunks)} chunk(s).",
+            "total_chunks": len(chunks),
+            "elapsed_seconds": elapsed,
         }
-    except Exception as e:
-        logger.error(f"Error in chunk endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("[POST /rag/chunk] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/embed", summary="Generate Embeddings & Index in Vector Store")
-async def embed_and_store_documents(request: EmbedAndStoreRequest):
-    """Download (if needed) free `all-MiniLM-L6-v2` model, encode chunks, and store in vector database."""
-    try:
-        count = await rag_service.embed_and_store(
-            doc_id=request.doc_id,
-            batch_size=request.batch_size
-        )
-        return {
-            "status": "success",
-            "message": f"Successfully embedded and indexed {count} chunks.",
-            "indexed_vectors_count": count
-        }
-    except Exception as e:
-        logger.error(f"Error in embed endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/chunk-all", summary="Batch Chunk All Scraped Documents at Once")
-async def chunk_all_documents():
-    """Clean and chunk all stored scraped documents in a single batch operation."""
+@router.post("/chunk-all", summary="Batch Clean and Chunk All Documents")
+async def chunk_all_scraped_documents():
+    """Clean and chunk ALL stored scraped documents in one combined batch operation."""
+    logger.info("[POST /rag/chunk-all] starting combined clean+chunk batch.")
+    start_time = time.perf_counter()
     try:
         chunks = await rag_service.chunk_all_documents()
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info("[POST /rag/chunk-all] generated %d chunk(s) in %.3fs.", len(chunks), elapsed)
         return {
             "status": "success",
-            "message": f"Successfully chunked all documents into {len(chunks)} total chunks.",
-            "total_chunks": len(chunks)
+            "message": f"Successfully chunked all documents into {len(chunks)} chunk(s).",
+            "total_chunks": len(chunks),
+            "elapsed_seconds": elapsed,
         }
-    except Exception as e:
-        logger.error(f"Error in chunk-all endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("[POST /rag/chunk-all] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/embed-all", summary="Batch Embed and Index All Documents at Once")
-async def embed_all_documents(request: BatchEmbedRequest):
-    """Batch chunk all documents, generate embeddings for all chunks, and index in vector store at once."""
+# ---------------------------------------------------------------------------
+# Embedding endpoints
+# ---------------------------------------------------------------------------
+
+@router.post("/embed", summary="Embed and Index Document(s) in Vector Store")
+async def embed_and_store_documents(request: EmbedAndStoreRequest):
+    """Generate embeddings with ``all-MiniLM-L6-v2`` and index in the vector store."""
+    logger.info(
+        "[POST /rag/embed] doc_id=%s, batch_size=%d",
+        request.doc_id or "all",
+        request.batch_size,
+    )
+    start_time = time.perf_counter()
     try:
-        count = await rag_service.embed_all_documents(batch_size=request.batch_size)
+        indexed_count = await rag_service.embed_and_store(
+            doc_id=request.doc_id,
+            batch_size=request.batch_size,
+        )
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info("[POST /rag/embed] indexed %d vector(s) in %.3fs.", indexed_count, elapsed)
         return {
             "status": "success",
-            "message": f"Successfully embedded and indexed {count} total chunks across all documents.",
-            "indexed_vectors_count": count
+            "message": f"Successfully embedded and indexed {indexed_count} chunk(s).",
+            "indexed_vector_count": indexed_count,
+            "elapsed_seconds": elapsed,
         }
-    except Exception as e:
-        logger.error(f"Error in embed-all endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("[POST /rag/embed] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/search", response_model=List[SearchResultItem], summary="Semantic Vector Similarity Search")
+@router.post("/embed-all", summary="Batch Embed and Index All Documents")
+async def embed_all_scraped_documents(request: BatchEmbedRequest):
+    """Clean, chunk, embed, and index ALL documents in one end-to-end batch operation."""
+    logger.info("[POST /rag/embed-all] starting full pipeline batch (batch_size=%d).", request.batch_size)
+    start_time = time.perf_counter()
+    try:
+        indexed_count = await rag_service.embed_all_documents(batch_size=request.batch_size)
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info("[POST /rag/embed-all] indexed %d vector(s) in %.3fs.", indexed_count, elapsed)
+        return {
+            "status": "success",
+            "message": f"Successfully embedded and indexed {indexed_count} chunk(s) across all documents.",
+            "indexed_vector_count": indexed_count,
+            "elapsed_seconds": elapsed,
+        }
+    except Exception as exc:
+        logger.error("[POST /rag/embed-all] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+# ---------------------------------------------------------------------------
+# Search & answer endpoints
+# ---------------------------------------------------------------------------
+
+@router.post(
+    "/search",
+    response_model=List[SearchResultItem],
+    summary="Semantic Vector Similarity Search",
+)
 async def search_vector_store(request: SearchQueryRequest):
-    """Perform semantic cosine similarity search with LLM query reframing and hybrid keyword matching."""
+    """Hybrid semantic + keyword search over indexed chunks.
+
+    Supports optional LLM query reframing for improved recall on
+    ambiguous or under-specified queries.
+    """
+    logger.info(
+        "[POST /rag/search] query='%s', top_k=%d, threshold=%s, reframe=%s",
+        request.query,
+        request.top_k,
+        request.score_threshold,
+        request.reframe,
+    )
+    start_time = time.perf_counter()
     try:
-        results = rag_service.search_similar(
+        results = await asyncio.to_thread(
+            rag_service.search_similar,
             query=request.query,
             top_k=request.top_k,
             score_threshold=request.score_threshold,
             reframe=request.reframe,
-            temperature=request.temperature
+            temperature=request.temperature,
+        )
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info(
+            "[POST /rag/search] returned %d result(s) in %.3fs for query='%s'.",
+            len(results),
+            elapsed,
+            request.query,
         )
         return results
-    except Exception as e:
-        logger.error(f"Error in search endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("[POST /rag/search] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.post("/answer", response_model=AnswerResponse, summary="Grounded RAG Answer Generation")
+@router.post(
+    "/answer",
+    response_model=AnswerResponse,
+    summary="Grounded RAG Answer Generation",
+)
 async def generate_rag_answer(request: AnswerQueryRequest):
-    """Synthesize an accurate, grounded natural language answer from retrieved knowledge base chunks using local LLM."""
+    """Retrieve relevant context chunks and synthesise a grounded LLM answer.
+
+    The answer is generated by the local Qwen2.5-0.5B-Instruct model using
+    only facts present in the retrieved context (no hallucination).
+    """
+    logger.info(
+        "[POST /rag/answer] query='%s', top_k=%d, threshold=%s, reframe=%s, max_tokens=%d",
+        request.query,
+        request.top_k,
+        request.score_threshold,
+        request.reframe,
+        request.max_new_tokens,
+    )
+    start_time = time.perf_counter()
     try:
-        response = rag_service.generate_answer(
+        response = await asyncio.to_thread(
+            rag_service.generate_answer,
             query=request.query,
             top_k=request.top_k,
             score_threshold=request.score_threshold,
             reframe=request.reframe,
-            temperature=request.temperature
+            temperature=request.temperature,
+            max_new_tokens=request.max_new_tokens,
+        )
+        elapsed = round(time.perf_counter() - start_time, 3)
+        logger.info(
+            "[POST /rag/answer] generated answer in %.3fs for query='%s'.",
+            elapsed,
+            request.query,
         )
         return response
-    except Exception as e:
-        logger.error(f"Error in answer endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.error("[POST /rag/answer] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
 
 
-@router.get("/status", response_model=PipelineStatusResponse, summary="Get Pipeline & Vector Store Status")
+# ---------------------------------------------------------------------------
+# Status endpoint
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/status",
+    response_model=PipelineStatusResponse,
+    summary="Pipeline & Vector Store Health Status",
+)
 async def get_pipeline_status():
-    """Get metrics on scraped docs, processed docs, chunks, vector store count, and embedding model cache status."""
+    """Return file counts, vector store metrics, and model cache status for all pipeline stages."""
+    logger.debug("[GET /rag/status] fetching pipeline status.")
     try:
-        return rag_service.get_pipeline_status()
-    except Exception as e:
-        logger.error(f"Error in status endpoint: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-
+        status_data = rag_service.get_pipeline_status()
+        return PipelineStatusResponse(**status_data)
+    except Exception as exc:
+        logger.error("[GET /rag/status] failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))

@@ -7,9 +7,11 @@ import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from app.core.config import settings
-from app.core.logging import logger
+from app.core.logging import get_module_logger
 from app.modules.scraping.parsers import HTMLParser
 from app.modules.scraping.schemas import ScrapedDocument, UnifiedScrapeRequest
+
+logger = get_module_logger(__name__)
 
 
 def _render_page_sync(

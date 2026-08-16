@@ -1,89 +1,119 @@
+"""
+Scraping orchestration service for CrawlRAG.
+
+Wraps AsyncCrawler and JSONStore into a single high-level interface
+for the scraping router.  Handles save callbacks, timing, and error logging.
+"""
+
 import time
-from typing import Dict, List, Optional, Tuple
-from app.core.logging import logger
+from typing import List, Optional, Tuple
+
+from app.core.logging import get_module_logger
 from app.modules.scraping.crawler import crawler
 from app.modules.scraping.json_store import json_store
 from app.modules.scraping.schemas import (
     DocumentListResponse,
     ScrapedDocument,
     UnifiedScrapeRequest,
-    UnifiedScrapeResponse
+    UnifiedScrapeResponse,
 )
+
+logger = get_module_logger(__name__)
 
 
 class ScrapingService:
-    """Unified Scraping Orchestrator: Handles single-page, multi-page, and recursive crawling."""
+    """Unified scraping orchestrator for single-page and recursive crawling."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.crawler = crawler
         self.json_store = json_store
 
     async def scrape_website(self, request: UnifiedScrapeRequest) -> UnifiedScrapeResponse:
-        """Primary Unified Endpoint Logic:
+        """Crawl *request.url* recursively and persist each page as a JSON document.
 
-        1. Takes 1 seed URL.
-        2. Renders dynamic JavaScript / React SPA.
-        3. Extracts main page content + all internal links.
-        4. Recursively visits and scrapes each discovered internal URL.
-        5. Saves every individual page into its own JSON file in data/scraped/.
-        6. Returns all complete scraped documents in the response.
+        Steps:
+        1. BFS crawl from seed URL up to ``max_depth`` / ``max_pages``.
+        2. Each page is parsed into a ``ScrapedDocument``.
+        3. Documents are saved immediately via the ``on_document_scraped`` callback.
+        4. Returns a ``UnifiedScrapeResponse`` with full document list and metrics.
         """
         start_time = time.perf_counter()
         logger.info(
-            f"Starting unified scrape on: {request.url} | Max Depth: {request.max_depth} | "
-            f"Max Pages: {request.max_pages} | Render JS: {request.render_js}"
+            "Starting scrape: url='%s', max_depth=%d, max_pages=%d, render_js=%s.",
+            request.url,
+            request.max_depth,
+            request.max_pages,
+            request.render_js,
         )
 
-        all_documents: List[ScrapedDocument] = []
+        async def _save_document_callback(scraped_doc: ScrapedDocument) -> None:
+            """Persist a scraped document immediately and log any save errors."""
+            try:
+                _saved_doc, was_new = await self.json_store.save_document(scraped_doc)
+                if was_new:
+                    logger.debug("Saved new document: '%s' (%s).", scraped_doc.id, scraped_doc.url)
+                else:
+                    logger.debug("Document unchanged, skipped rewrite: '%s'.", scraped_doc.id)
+            except Exception as save_exc:
+                logger.error(
+                    "Failed to save document '%s' (%s): %s",
+                    scraped_doc.id,
+                    scraped_doc.url,
+                    save_exc,
+                    exc_info=True,
+                )
 
-        async def handle_document_saved(doc: ScrapedDocument):
-            saved_doc, _ = await self.json_store.save_document(doc)
-
-        scraped_docs, failed_urls, total_discovered = await self.crawler.crawl_nested(
+        scraped_documents, failed_urls, total_discovered_count = await self.crawler.crawl_nested(
             request=request,
-            on_document_scraped=handle_document_saved
+            on_document_scraped=_save_document_callback,
         )
 
         elapsed = round(time.perf_counter() - start_time, 2)
-
         logger.info(
-            f"Unified scrape completed: {len(scraped_docs)} pages scraped from {request.url} in {elapsed}s"
+            "Scrape complete: scraped=%d, discovered=%d, failed=%d, elapsed=%.2fs.",
+            len(scraped_documents),
+            total_discovered_count,
+            len(failed_urls),
+            elapsed,
         )
 
         return UnifiedScrapeResponse(
             seed_url=request.url,
-            total_scraped=len(scraped_docs),
-            total_discovered=total_discovered,
+            total_scraped=len(scraped_documents),
+            total_discovered=total_discovered_count,
             total_failed=len(failed_urls),
             elapsed_seconds=elapsed,
-            documents=scraped_docs,
-            failed_urls=failed_urls
+            documents=scraped_documents,
+            failed_urls=failed_urls,
         )
 
     async def get_document(self, doc_id: str) -> Optional[ScrapedDocument]:
-        """Fetch a specific JSON document by ID."""
+        """Retrieve a scraped document by its ``doc_id``."""
         return await self.json_store.get_document(doc_id)
 
     async def list_all_documents(
         self,
         skip: int = 0,
         limit: int = 100,
-        query: Optional[str] = None
+        query: Optional[str] = None,
     ) -> DocumentListResponse:
-        """List summaries of stored JSON documents."""
-        documents, total_count = await self.json_store.list_documents(
+        """Return paginated summaries of all stored scraped documents."""
+        paginated_documents, total_count = await self.json_store.list_documents(
             skip=skip,
             limit=limit,
-            query=query
+            query=query,
         )
         return DocumentListResponse(
             total_count=total_count,
-            documents=documents
+            documents=paginated_documents,
         )
 
     async def delete_document(self, doc_id: str) -> bool:
-        """Delete document JSON file."""
+        """Delete the stored JSON file for *doc_id*.  Returns True on success."""
         return await self.json_store.delete_document(doc_id)
 
 
+# ---------------------------------------------------------------------------
+# Module-level singleton
+# ---------------------------------------------------------------------------
 scraping_service = ScrapingService()

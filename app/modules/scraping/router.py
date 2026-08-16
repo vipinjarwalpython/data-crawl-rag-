@@ -1,5 +1,6 @@
 from typing import Optional
 from fastapi import APIRouter, HTTPException, Query, status
+from app.core.logging import get_module_logger
 from app.modules.scraping.schemas import (
     DocumentListResponse,
     ScrapedDocument,
@@ -8,7 +9,10 @@ from app.modules.scraping.schemas import (
 )
 from app.modules.scraping.service import scraping_service
 
+logger = get_module_logger(__name__)
+
 router = APIRouter(prefix="/scraping", tags=["Web Scraping & Crawler Engine"])
+
 
 
 @router.post(
@@ -28,13 +32,20 @@ router = APIRouter(prefix="/scraping", tags=["Web Scraping & Crawler Engine"])
 )
 async def scrape_endpoint(request: UnifiedScrapeRequest):
     """Primary unified scraping endpoint."""
+    logger.info("[POST /scraping/scrape] url='%s', max_depth=%d.", request.url, request.max_depth)
     try:
         response = await scraping_service.scrape_website(request)
+        logger.info(
+            "[POST /scraping/scrape] scraped=%d pages from '%s'.",
+            response.total_scraped,
+            request.url,
+        )
         return response
-    except Exception as e:
+    except Exception as exc:
+        logger.error("[POST /scraping/scrape] failed for '%s': %s", request.url, exc, exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Scraping failed for '{request.url}': {str(e)}"
+            detail=f"Scraping failed for '{request.url}': {exc}"
         )
 
 
