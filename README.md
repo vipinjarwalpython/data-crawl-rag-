@@ -151,14 +151,22 @@ data-scraping/
 │           ├── service.py             # RAGPipelineService: full pipeline logic
 │           ├── router.py              # FastAPI routes for RAG
 │           └── schemas.py             # Pydantic models for RAG
+├── frontend/                          # 🎨 Modern React + Vite AI Dashboard
+│   ├── src/
+│   │   ├── components/                # Header, Sidebar, ChatArea, SourceCard, Stepper
+│   │   ├── api/client.js              # FastAPI connector client
+│   │   ├── index.css                  # Obsidian Glassmorphism design system
+│   │   └── App.jsx                    # Root state & workflow coordinator
+│   ├── package.json
+│   └── vite.config.js                 # Proxy config to FastAPI backend
 ├── data/
 │   ├── scraped/                       # Raw scraped JSON files (one per page)
 │   ├── clean_data/                    # Cleaned JSON files
 │   ├── chunked_data/                  # Chunked JSON files
 │   └── vector_store/                  # vector_index.npy + metadata.json
 ├── models/
-│   ├── embeddings/                    # Cached all-MiniLM-L6-v2 model files
-│   └── llm/                           # Cached Qwen2.5-0.5B-Instruct files
+│   ├── embeddings/                    # Cached BAAI/bge-small-en-v1.5 model files
+│   └── llm/                           # Cached Qwen2.5-1.5B-Instruct files
 ├── logs/
 │   └── crawlrag.log                   # Rotating application log (10MB × 5)
 ├── tests/
