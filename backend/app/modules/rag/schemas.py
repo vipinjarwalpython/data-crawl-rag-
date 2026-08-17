@@ -205,12 +205,36 @@ class SearchResultItem(BaseModel):
     chunk_index: int
 
 
+class RAGEvaluationMetrics(BaseModel):
+    """Production-grade RAG accuracy and performance evaluation metrics."""
+
+    retrieval_confidence: float = Field(
+        description="Average cosine similarity score of retrieved chunks (0.0 - 1.0)."
+    )
+    context_coverage: float = Field(
+        description="Query term overlap ratio with retrieved context chunks (0.0 - 1.0)."
+    )
+    faithfulness_score: float = Field(
+        description="Lexical groundedness score measuring answer support from context (0.0 - 1.0)."
+    )
+    retrieval_time_ms: float = Field(
+        description="Time taken for vector similarity search and retrieval in milliseconds."
+    )
+    generation_time_ms: float = Field(
+        description="Time taken for LLM answer generation in milliseconds."
+    )
+    total_time_ms: float = Field(
+        description="Total RAG pipeline execution time in milliseconds."
+    )
+
+
 class AnswerResponse(BaseModel):
-    """Grounded LLM answer with retrieved source chunks."""
+    """Grounded LLM answer with retrieved source chunks and production accuracy metrics."""
 
     query: str
     answer: str
     sources: List[SearchResultItem]
+    evaluation: RAGEvaluationMetrics
 
     @computed_field  # type: ignore[misc]
     @property

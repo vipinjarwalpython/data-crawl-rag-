@@ -588,6 +588,14 @@ class RAGPipelineService:
                     "to answer your question."
                 ),
                 "sources": [],
+                "evaluation": {
+                    "retrieval_confidence": 0.0,
+                    "context_coverage": 0.0,
+                    "faithfulness_score": 1.0,
+                    "retrieval_time_ms": round(retrieval_elapsed * 1000, 2),
+                    "generation_time_ms": 0.0,
+                    "total_time_ms": round(retrieval_elapsed * 1000, 2),
+                },
             }
 
         # Deduplicate chunks by chunk_id to avoid feeding identical text to the LLM.
@@ -622,6 +630,39 @@ class RAGPipelineService:
 
         cleaned_answer = llm_output_cleaner.clean(raw_answer)
 
+        # Calculate production evaluation metrics (RAG Triad & Performance)
+        retrieval_confidence = (
+            round(sum(c.score for c in unique_chunks) / len(unique_chunks), 4)
+            if unique_chunks
+            else 0.0
+        )
+
+        stop_words = _RETRIEVAL_STOP_WORDS
+        query_words = {w.lower() for w in re.findall(r"\w+", query) if w.lower() not in stop_words and len(w) > 2}
+        context_lower = context_text.lower()
+
+        if query_words:
+            matched_query_words = sum(1 for w in query_words if w in context_lower)
+            context_coverage = round(matched_query_words / len(query_words), 4)
+        else:
+            context_coverage = 1.0
+
+        answer_words = {w.lower() for w in re.findall(r"\w+", cleaned_answer) if w.lower() not in stop_words and len(w) > 2}
+        if answer_words:
+            supported_answer_words = sum(1 for w in answer_words if w in context_lower)
+            faithfulness_score = round(supported_answer_words / len(answer_words), 4)
+        else:
+            faithfulness_score = 1.0
+
+        evaluation_metrics = {
+            "retrieval_confidence": retrieval_confidence,
+            "context_coverage": context_coverage,
+            "faithfulness_score": faithfulness_score,
+            "retrieval_time_ms": round(retrieval_elapsed * 1000, 2),
+            "generation_time_ms": round(generation_elapsed * 1000, 2),
+            "total_time_ms": round((retrieval_elapsed + generation_elapsed) * 1000, 2),
+        }
+
         logger.info(
             "Answer generated in %.3fs (retrieval=%.3fs, generation=%.3fs) for query='%s'.",
             retrieval_elapsed + generation_elapsed,
@@ -634,6 +675,7 @@ class RAGPipelineService:
             "query": query,
             "answer": cleaned_answer,
             "sources": unique_chunks,
+            "evaluation": evaluation_metrics,
         }
 
     # ------------------------------------------------------------------
