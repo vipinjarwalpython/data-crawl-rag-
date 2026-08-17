@@ -98,10 +98,30 @@ class Settings(BaseSettings):
     LLM_TEMPERATURE: float = 0.1            # low = factual; 0.0 = fully deterministic
 
     # ------------------------------------------------------------------
+    # PostgreSQL database
+    # ------------------------------------------------------------------
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = "crawlrag"
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: str = "12345"
+    POSTGRES_POOL_MIN_SIZE: int = 1
+    POSTGRES_POOL_MAX_SIZE: int = 5
+    POSTGRES_COMMAND_TIMEOUT: float = 30.0  # seconds per query
+
+    @property
+    def POSTGRES_DSN(self) -> str:  # noqa: N802
+        """Build the asyncpg connection DSN from individual settings."""
+        return (
+            f"postgresql://{self.POSTGRES_USER}:{self.POSTGRES_PASSWORD}"
+            f"@{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{self.POSTGRES_DB}"
+        )
+
+    # ------------------------------------------------------------------
     # RAG retrieval defaults
     # ------------------------------------------------------------------
     RETRIEVAL_TOP_K: int = 7                # more candidates → richer context
-    RETRIEVAL_SCORE_THRESHOLD: float = 0.2  # lower floor → fewer empty results
+    RETRIEVAL_SCORE_THRESHOLD: float = 0.35  # 0.35+ = genuinely relevant for BGE-small; below this is noise
 
     # ------------------------------------------------------------------
     # Helpers

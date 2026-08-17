@@ -228,6 +228,11 @@ class RAGEvaluationMetrics(BaseModel):
     )
 
 
+# Sentinel phrase used by generate_answer() when no relevant context is found.
+# Keeping this constant here avoids circular imports and keeps service.py DRY.
+NO_CONTEXT_SENTINEL = "I don't have information about that in the available data."
+
+
 class AnswerResponse(BaseModel):
     """Grounded LLM answer with retrieved source chunks and production accuracy metrics."""
 
@@ -241,6 +246,17 @@ class AnswerResponse(BaseModel):
     def sources_count(self) -> int:
         """Number of source chunks used to generate the answer."""
         return len(self.sources)
+
+    @computed_field  # type: ignore[misc]
+    @property
+    def is_out_of_context(self) -> bool:
+        """True when the query fell outside the indexed knowledge base.
+
+        When True, ``sources`` will be empty and the ``answer`` will contain
+        the standard no-information message.  Frontend clients can use this
+        flag to show a distinct UI state instead of parsing the answer string.
+        """
+        return NO_CONTEXT_SENTINEL.lower() in self.answer.lower()
 
 
 class PipelineStatusResponse(BaseModel):

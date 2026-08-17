@@ -24,6 +24,8 @@ from fastapi.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.logging import logger
+from app.modules.database.connection import db_pool
+from app.modules.database.router import router as db_router
 from app.modules.rag.router import router as rag_router
 from app.modules.scraping.router import router as scraping_router
 
@@ -39,7 +41,7 @@ async def lifespan(app: FastAPI):
     log_file = log_dir / "crawlrag.log"
 
     logger.info(
-        "Starting %s v0.2.0 (%s mode). Log file: %s.",
+        "Starting %s v0.3.0 (%s mode). Log file: %s.",
         settings.APP_NAME,
         settings.APP_ENV,
         log_file,
@@ -50,7 +52,24 @@ async def lifespan(app: FastAPI):
         settings.resolve_path(settings.SCRAPED_DIR),
         settings.resolve_path(settings.VECTOR_STORE_DIR),
     )
+
+    # Open the PostgreSQL connection pool.  We use a try/except so the app
+    # still starts even if Postgres is temporarily unavailable — the database
+    # endpoints will return 503 until the DB comes back and the app restarts.
+    try:
+        await db_pool.connect()
+        logger.info("PostgreSQL connection pool ready.")
+    except Exception as exc:
+        logger.warning(
+            "PostgreSQL pool failed to open on startup (%s). "
+            "The /db/* endpoints will be unavailable until the issue is resolved.",
+            exc,
+        )
+
     yield
+
+    # Graceful shutdown
+    await db_pool.disconnect()
     logger.info("Shutting down %s.", settings.APP_NAME)
 
 
@@ -63,9 +82,10 @@ app = FastAPI(
     description=(
         "**CrawlRAG** — High-performance web scraping, recursive BFS crawling, "
         "semantic chunking, dense embedding (BAAI/bge-small-en-v1.5), vector search, "
-        "and grounded RAG answer generation with local Qwen2.5-1.5B-Instruct."
+        "grounded RAG answer generation with local Qwen2.5-1.5B-Instruct, "
+        "and a PostgreSQL structured-data fallback layer."
     ),
-    version="0.2.0",
+    version="0.3.0",
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_url="/openapi.json",
@@ -90,6 +110,7 @@ app.add_middleware(
 
 app.include_router(scraping_router, prefix=settings.API_V1_PREFIX)
 app.include_router(rag_router, prefix=settings.API_V1_PREFIX)
+app.include_router(db_router, prefix=settings.API_V1_PREFIX)
 
 
 # ---------------------------------------------------------------------------
@@ -111,6 +132,7 @@ async def root():
                 "vector store search (Active)"
             ),
             "rag_answer": "Grounded RAG answer generation with Qwen2.5-1.5B-Instruct (Active)",
+            "database": "PostgreSQL structured-data fallback layer — cars table (Active)",
         },
         "key_endpoints": {
             "scrape": f"{settings.API_V1_PREFIX}/scraping/scrape",
@@ -118,6 +140,10 @@ async def root():
             "search": f"{settings.API_V1_PREFIX}/rag/search",
             "answer": f"{settings.API_V1_PREFIX}/rag/answer",
             "status": f"{settings.API_V1_PREFIX}/rag/status",
+            "db_setup": f"{settings.API_V1_PREFIX}/db/setup",
+            "db_cars": f"{settings.API_V1_PREFIX}/db/cars",
+            "db_search": f"{settings.API_V1_PREFIX}/db/search",
+            "db_health": f"{settings.API_V1_PREFIX}/db/health",
         },
     }
 

@@ -255,8 +255,7 @@ async def generate_rag_answer(request: AnswerQueryRequest):
     )
     start_time = time.perf_counter()
     try:
-        response = await asyncio.to_thread(
-            rag_service.generate_answer,
+        response = await rag_service.generate_answer(
             query=request.query,
             top_k=request.top_k,
             score_threshold=request.score_threshold,

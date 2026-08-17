@@ -2,7 +2,7 @@
   "info": {
     "_postman_id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
     "name": "CrawlRAG — Full API Collection",
-    "description": "Complete Postman collection for CrawlRAG v0.2.0.\n\nEnd-to-end flow:\n  1. Scrape website  (POST /scraping/scrape)\n  2. Build RAG index (POST /rag/embed-all) — runs clean → chunk → embed in one call\n  3. Check status    (GET  /rag/status)\n  4. Search chunks   (POST /rag/search)\n  5. Get LLM answer  (POST /rag/answer)\n\nModels used:\n  • Embeddings: BAAI/bge-small-en-v1.5 (384-dim, ~130 MB, high MTEB benchmark score)\n  • LLM:        Qwen/Qwen2.5-1.5B-Instruct (~3 GB, instruction-tuned reasoning)\n\nBase URL variable: {{base_url}} = http://127.0.0.1:8000",
+    "description": "Complete Postman collection for CrawlRAG v0.3.0.\n\nUnified Single Endpoint Flow (POST /api/v1/rag/answer):\n  1. Checks Vector Store (dense vector + keyword hybrid search)\n  2. If Vector Store has no relevant info (or weak coverage) → Fallback to PostgreSQL (NL-to-SQL)\n  3. If PostgreSQL also has no info → Graceful response ('I don't have information about that...')\n\nModels used:\n  • Embeddings: BAAI/bge-small-en-v1.5 (384-dim, dense vector search)\n  • LLM:        Qwen/Qwen2.5-1.5B-Instruct (local instruction-tuned model)\n  • Database:   PostgreSQL (structured data fallback layer)\n\nBase URL variable: {{base_url}} = http://127.0.0.1:8000",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -22,7 +22,7 @@
   "item": [
     {
       "name": "0. Health & Info",
-      "description": "Always start here to confirm the server is running.",
+      "description": "Start here to confirm the server and PostgreSQL connection are active.",
       "item": [
         {
           "name": "Root Info",
@@ -34,7 +34,7 @@
               "host": ["{{base_url}}"],
               "path": [""]
             },
-            "description": "Returns API metadata, version, active modules, and links to all key endpoints."
+            "description": "Returns API metadata, version (v0.3.0), active modules, and endpoint routes."
           },
           "response": []
         },
@@ -48,7 +48,7 @@
               "host": ["{{base_url}}"],
               "path": ["health"]
             },
-            "description": "Returns server status, environment mode (dev/prod), log file path, and key directory paths.\n\nExpected response:\n{\n  \"status\": \"healthy\",\n  \"environment\": \"development\",\n  \"debug_mode\": true,\n  \"log_file\": \"...\\\\logs\\\\crawlrag.log\",\n  \"scraped_dir\": \"...\",\n  \"vector_store_dir\": \"...\"\n}"
+            "description": "Returns server status, environment mode, log file location, and active storage paths."
           },
           "response": []
         }
@@ -56,7 +56,7 @@
     },
     {
       "name": "1. Web Scraping",
-      "description": "Step 1 of the pipeline. Crawl a website and save each page as a JSON file in data/scraped/.",
+      "description": "Step 1 of the pipeline. Crawl a website and save each page as a JSON document in data/scraped/.",
       "item": [
         {
           "name": "Scrape Website (Full Recursive Crawl)",
@@ -75,12 +75,12 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "scraping", "scrape"]
             },
-            "description": "BFS recursive crawl from the seed URL.\n\nWhat happens:\n  1. Playwright renders JavaScript (React/Vue/Angular SPAs supported)\n  2. BeautifulSoup extracts: title, headings (h1–h6), paragraphs, links\n  3. Discovers all internal links and crawls each subpage\n  4. Each page is saved as a separate JSON in data/scraped/\n  5. Returns full data for every scraped page\n\nFields:\n  url                  - Seed URL to start crawling from (required)\n  max_depth            - BFS depth limit (0 = seed page only, 2 = seed + 2 levels deep)\n  max_pages            - Hard cap on total pages scraped\n  render_js            - true = use Playwright; false = fast HTTPX-only\n  wait_seconds         - Time to wait after page load for JS hydration\n  concurrency          - Parallel page workers\n  delay_seconds        - Polite delay between requests\n  stay_within_path     - Only crawl under the seed URL path\n  crawl_external_links - Also follow external links found on pages\n  force_refresh        - Re-scrape pages even if cached"
+            "description": "BFS recursive crawl from the seed URL using Playwright for JS hydration."
           },
           "response": []
         },
         {
-          "name": "Scrape Single Page (No JS, Fast)",
+          "name": "Scrape Single Page (Fast, No JS)",
           "request": {
             "method": "POST",
             "header": [
@@ -96,7 +96,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "scraping", "scrape"]
             },
-            "description": "Scrape a single static page quickly without JavaScript rendering.\nUse max_depth=0, max_pages=1, render_js=false for maximum speed."
+            "description": "Scrape a single static HTML page quickly without JavaScript rendering."
           },
           "response": []
         }
@@ -104,7 +104,7 @@
     },
     {
       "name": "2. Document Store",
-      "description": "Inspect, retrieve, and manage the scraped JSON documents stored in data/scraped/.",
+      "description": "Inspect, list, retrieve, and delete scraped JSON documents.",
       "item": [
         {
           "name": "List All Scraped Documents",
@@ -117,11 +117,10 @@
               "path": ["api", "v1", "scraping", "documents"],
               "query": [
                 { "key": "skip", "value": "0", "description": "Pagination offset" },
-                { "key": "limit", "value": "50", "description": "Max records to return" },
-                { "key": "query", "value": "", "disabled": true, "description": "Optional text filter on title or URL" }
+                { "key": "limit", "value": "50", "description": "Max documents to return" }
               ]
             },
-            "description": "Returns metadata summaries of all saved JSON documents (id, url, title, word_count, scraped_at).\nCopy a doc_id from this response and set it in the collection variable {{doc_id}}."
+            "description": "Returns metadata list of saved scraped documents."
           },
           "response": []
         },
@@ -135,7 +134,7 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "scraping", "documents", "{{doc_id}}"]
             },
-            "description": "Fetch the full structured JSON of a specific scraped document.\nSet {{doc_id}} to a value from the List Documents response."
+            "description": "Fetch the full JSON document content by doc_id."
           },
           "response": []
         },
@@ -149,122 +148,18 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "scraping", "documents", "{{doc_id}}"]
             },
-            "description": "Permanently deletes a scraped JSON document from disk.\nWARNING: This cannot be undone. Re-scrape the URL to get it back."
+            "description": "Deletes a scraped JSON document from disk."
           },
           "response": []
         }
       ]
     },
     {
-      "name": "3. RAG Pipeline — Step by Step",
-      "description": "Individual pipeline stages for fine-grained control.\n\nORDER: clean → chunk → embed → search/answer\n\nTIP: Use 'RAG Pipeline — One-Shot (Recommended)' folder to run the full pipeline in a single call instead.",
+      "name": "3. RAG Pipeline — Ingestion",
+      "description": "Ingestion stages to clean, chunk, and embed scraped content.",
       "item": [
         {
-          "name": "Step A — Clean Documents",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"doc_id\": null,\n  \"remove_boilerplate\": true,\n  \"min_paragraph_length\": 20\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/rag/clean",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "rag", "clean"]
-            },
-            "description": "Clean raw scraped JSON and write cleaned output to data/clean_data/.\n\nWhat it removes: cookie banners, nav menus, tracking scripts, excessive whitespace.\nWhat it preserves: headings, contact info (+91 phone, email, address), prices, product data.\n\ndoc_id: null = clean all documents; \"doc_abc123\" = clean only that document.\nmin_paragraph_length: text blocks shorter than this are dropped (noise filter)."
-          },
-          "response": []
-        },
-        {
-          "name": "Step A (batch) — Clean All Documents",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"remove_boilerplate\": true,\n  \"min_paragraph_length\": 20\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/rag/clean-all",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "rag", "clean-all"]
-            },
-            "description": "Batch-clean all stored scraped documents in one operation."
-          },
-          "response": []
-        },
-        {
-          "name": "Step B — Chunk Documents",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"doc_id\": null,\n  \"chunk_size\": 400,\n  \"chunk_overlap\": 80\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/rag/chunk",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "rag", "chunk"]
-            },
-            "description": "Split cleaned documents into overlapping semantic chunks using Recursive Character Chunking.\n\nAlgorithm splits text hierarchically by: \\n\\n → \\n → \". \" → \" \" → character\nThis respects natural sentence and paragraph boundaries.\n\nchunk_size: max characters per chunk (default: 400)\nchunk_overlap: characters shared between adjacent chunks (default: 80)\n  → Overlap prevents context loss at chunk boundaries.\n\nOutput saved to: data/chunked_data/{doc_id}_chunks.json"
-          },
-          "response": []
-        },
-        {
-          "name": "Step B (batch) — Chunk All Documents",
-          "request": {
-            "method": "POST",
-            "header": [],
-            "url": {
-              "raw": "{{base_url}}/api/v1/rag/chunk-all",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "rag", "chunk-all"]
-            },
-            "description": "Clean and chunk ALL scraped documents in one combined batch. No body required."
-          },
-          "response": []
-        },
-        {
-          "name": "Step C — Embed & Index Document(s)",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"doc_id\": null,\n  \"batch_size\": 32\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/rag/embed",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "rag", "embed"]
-            },
-            "description": "Generate 384-dim L2-normalised embeddings using all-MiniLM-L6-v2 and add them to the vector store.\n\nFirst call downloads the model (~90 MB) to models/embeddings/. Subsequent calls use the local cache.\n\nbatch_size: how many texts are embedded per GPU/CPU batch. Higher = faster but more RAM.\ndoc_id: null = embed all chunked documents; \"doc_abc123\" = embed only that document.\n\nVector store: data/vector_store/vector_index.npy + metadata.json"
-          },
-          "response": []
-        }
-      ]
-    },
-    {
-      "name": "4. RAG Pipeline — One-Shot (Recommended) ⭐",
-      "description": "Runs the complete pipeline (clean → chunk → embed → store) in a single API call.\nUse this instead of running Steps A, B, C individually.",
-      "item": [
-        {
-          "name": "⭐ Full Pipeline: Embed All (Recommended)",
+          "name": "⭐ Embed All (One-Shot Ingestion)",
           "request": {
             "method": "POST",
             "header": [
@@ -280,18 +175,12 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "rag", "embed-all"]
             },
-            "description": "ONE CALL to run the entire RAG ingestion pipeline:\n  1. Clean all scraped documents (remove boilerplate)\n  2. Chunk all cleaned text (400-char chunks, 80-char overlap)\n  3. Generate embeddings with all-MiniLM-L6-v2 (384-dim)\n  4. Clear old index and store new vectors\n\nRun this after every scrape to rebuild the knowledge base.\n\nResponse includes:\n  indexed_vector_count - total chunk vectors stored\n  elapsed_seconds      - total time taken"
+            "description": "Runs full ingestion (clean → chunk → embed → store) in a single call."
           },
           "response": []
-        }
-      ]
-    },
-    {
-      "name": "5. Search & Answer",
-      "description": "Query the vector store and get grounded LLM answers.\n\nPre-requisite: Run 'embed-all' first to build the index.",
-      "item": [
+        },
         {
-          "name": "RAG Pipeline Status",
+          "name": "Check Pipeline Status",
           "request": {
             "method": "GET",
             "header": [],
@@ -300,12 +189,18 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "rag", "status"]
             },
-            "description": "Check all pipeline stage counts and model cache status before querying.\n\nExpected response:\n{\n  \"scraped_document_count\": 45,\n  \"cleaned_document_count\": 45,\n  \"chunked_document_count\": 45,\n  \"vector_count\": 1240,\n  \"embedding_dimension\": 384,\n  \"embedding_model\": \"sentence-transformers/all-MiniLM-L6-v2\",\n  \"embedding_model_cached_locally\": true,\n  \"llm_model\": \"Qwen/Qwen2.5-0.5B-Instruct\",\n  \"llm_model_cached_locally\": true,\n  \"vector_store_stats\": { ... }\n}\n\nvector_count > 0 means the index is ready for search/answer."
+            "description": "Returns vector store statistics, document counts, and model cache status."
           },
           "response": []
-        },
+        }
+      ]
+    },
+    {
+      "name": "4. Unified Search & Answer Endpoint ⭐",
+      "description": "SINGLE ENDPOINT for all Q&A functionality: POST /api/v1/rag/answer\n\nPriority Order:\n  1. Vector Store Hit → Grounded Answer + Chunks Sources\n  2. Vector Store Miss → PostgreSQL Fallback (NL to SQL) → Structured Rows\n  3. Neither Has Info → Graceful Sentinel Response ('I don't have information...')",
+      "item": [
         {
-          "name": "Semantic Search (Retrieve Chunks Only)",
+          "name": "1. Vector Store Hit (Scraped Data Answer)",
           "request": {
             "method": "POST",
             "header": [
@@ -313,49 +208,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"query\": \"what books are available in mystery category\",\n  \"top_k\": 7,\n  \"score_threshold\": 0.2,\n  \"reframe\": false,\n  \"temperature\": 0.1\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/rag/search",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "rag", "search"]
-            },
-            "description": "Hybrid semantic + keyword search over the vector store. Returns the top-K most relevant text chunks.\n\nRetrieval strategy:\n  1. Dense: all-MiniLM-L6-v2 cosine similarity (primary)\n  2. Sparse: phrase + keyword boost on chunk text and title\n  3. Contact intent boost: +score when query contains contact/phone/address keywords\n  4. Optional: LLM reframing (set reframe: true) for improved recall on vague queries\n\nFields:\n  query           - Natural language search query (also accepts: question, prompt, q, input, text)\n  top_k           - Max results to return (1–50, default: 7)\n  score_threshold - Min hybrid score to include (0.0–1.0, default: 0.2). Lower = more results.\n  reframe         - LLM rewrites query for better retrieval (false = faster)\n  temperature     - LLM temperature for reframing (default: 0.1)\n\nResponse: array of SearchResultItem with chunk_id, url, title, text, score, chunk_index"
-          },
-          "response": []
-        },
-        {
-          "name": "Semantic Search — Contact/Location Query",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"query\": \"contact address phone number email\",\n  \"top_k\": 5,\n  \"score_threshold\": 0.1,\n  \"reframe\": false,\n  \"temperature\": 0.1\n}",
-              "options": { "raw": { "language": "json" } }
-            },
-            "url": {
-              "raw": "{{base_url}}/api/v1/rag/search",
-              "host": ["{{base_url}}"],
-              "path": ["api", "v1", "rag", "search"]
-            },
-            "description": "Contact-intent queries get an automatic keyword boost for chunks containing phone numbers, addresses, and email addresses. Use a lower score_threshold (0.1) when searching for specific entities."
-          },
-          "response": []
-        },
-        {
-          "name": "⭐ RAG Answer — Ask a Question",
-          "request": {
-            "method": "POST",
-            "header": [
-              { "key": "Content-Type", "value": "application/json" }
-            ],
-            "body": {
-              "mode": "raw",
-              "raw": "{\n  \"query\": \"Tell me about Lab Girl book — its price, category and availability\",\n  \"top_k\": 7,\n  \"score_threshold\": 0.2,\n  \"reframe\": true,\n  \"temperature\": 0.1,\n  \"max_new_tokens\": 512\n}",
+              "raw": "{\n  \"query\": \"Tell me about Lab Girl book — its price, category and availability\",\n  \"top_k\": 7,\n  \"score_threshold\": 0.35,\n  \"reframe\": true,\n  \"temperature\": 0.1,\n  \"max_new_tokens\": 512\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -363,12 +216,12 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "rag", "answer"]
             },
-            "description": "Retrieves relevant context chunks and generates a grounded, factual answer using the local Qwen2.5-0.5B-Instruct LLM.\n\nPipeline inside this endpoint:\n  1. Embed query with all-MiniLM-L6-v2\n  2. [Optional] Reframe query with LLM for better recall\n  3. Hybrid search: cosine similarity + keyword boost\n  4. Deduplicate retrieved chunks by chunk_id\n  5. Build context: Source[1] ... Source[N]\n  6. Generate answer: Qwen2.5-0.5B-Instruct (max_new_tokens=512, temp=0.1)\n  7. Post-process: LLMOutputCleaner strips robotic meta-commentary\n\nQuery aliases: also accepts 'question', 'prompt', 'q', 'input', 'text' instead of 'query'.\n\nResponse:\n{\n  \"query\": \"...\",\n  \"answer\": \"Lab Girl is a memoir by Hope Jahren priced at £45.17...\",\n  \"sources\": [ { \"chunk_id\": \"...\", \"title\": \"...\", \"score\": 0.91, ... } ],\n  \"sources_count\": 3\n}"
+            "description": "Demonstrates Vector Store Hit: data exists in scraped vector chunks. Returns LLM answer + source chunks list."
           },
           "response": []
         },
         {
-          "name": "RAG Answer — Using Question Alias",
+          "name": "2. PostgreSQL Fallback Hit (Structured DB Answer)",
           "request": {
             "method": "POST",
             "header": [
@@ -376,7 +229,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"question\": \"What services does this company offer?\",\n  \"top_k\": 7,\n  \"score_threshold\": 0.2,\n  \"reframe\": true,\n  \"temperature\": 0.1,\n  \"max_new_tokens\": 512\n}",
+              "raw": "{\n  \"query\": \"Which Porsche models cost more than 300000 USD?\",\n  \"top_k\": 5,\n  \"score_threshold\": 0.35,\n  \"reframe\": true,\n  \"temperature\": 0.1,\n  \"max_new_tokens\": 512\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -384,12 +237,12 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "rag", "answer"]
             },
-            "description": "Demonstrates the QueryNormalizerMixin: the 'question' field is automatically mapped to 'query' before validation. Also accepts: prompt, q, input, text."
+            "description": "Demonstrates PostgreSQL Fallback Hit: vector store context is missing/weak, so system converts query to SQL and fetches records from PostgreSQL cars table. Returns DB rows with sources: []."
           },
           "response": []
         },
         {
-          "name": "RAG Answer — With Query Reframing (Best Accuracy)",
+          "name": "3. Graceful Out-of-Context (Neither DB Hit)",
           "request": {
             "method": "POST",
             "header": [
@@ -397,7 +250,7 @@
             ],
             "body": {
               "mode": "raw",
-              "raw": "{\n  \"query\": \"best book\",\n  \"top_k\": 7,\n  \"score_threshold\": 0.15,\n  \"reframe\": true,\n  \"temperature\": 0.1,\n  \"max_new_tokens\": 512\n}",
+              "raw": "{\n  \"query\": \"what is score of india vs pakistan match?\",\n  \"top_k\": 5,\n  \"score_threshold\": 0.35,\n  \"reframe\": true,\n  \"temperature\": 0.1,\n  \"max_new_tokens\": 512\n}",
               "options": { "raw": { "language": "json" } }
             },
             "url": {
@@ -405,7 +258,55 @@
               "host": ["{{base_url}}"],
               "path": ["api", "v1", "rag", "answer"]
             },
-            "description": "For short or vague queries, set reframe: true. The LLM expands 'best book' into more precise retrieval keywords before embedding, improving recall.\n\nAlso use a slightly lower score_threshold (0.15) for short queries."
+            "description": "Demonstrates Out-of-Context Response: query is absent in both Vector Store and PostgreSQL DB. Returns clean sentinel answer ('I don't have information...') with sources: []."
+          },
+          "response": []
+        }
+      ]
+    },
+    {
+      "name": "5. PostgreSQL Management",
+      "description": "Direct management and health endpoints for the PostgreSQL database.",
+      "item": [
+        {
+          "name": "Database Health",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/db/health",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "db", "health"]
+            },
+            "description": "Inspect PostgreSQL pool statistics, host details, and cars table count."
+          },
+          "response": []
+        },
+        {
+          "name": "Setup Table & Seed Cars",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/db/setup",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "db", "setup"]
+            },
+            "description": "Creates the cars table and seeds 20 sample classic car records."
+          },
+          "response": []
+        },
+        {
+          "name": "List All Cars",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/api/v1/db/cars",
+              "host": ["{{base_url}}"],
+              "path": ["api", "v1", "db", "cars"]
+            },
+            "description": "Fetch all car records from PostgreSQL."
           },
           "response": []
         }

@@ -3,11 +3,18 @@ RAG pipeline service for CrawlRAG.
 
 Orchestrates the full data pipeline:
     Raw scraped JSON
-        → TextCleaner       (remove boilerplate, normalise whitespace)
+        → TextCleaner               (remove boilerplate, normalise whitespace)
         → RecursiveCharacterChunker (split into semantic chunks)
-        → EmbeddingManager  (encode chunks with all-MiniLM-L6-v2)
-        → VectorStore       (persist and search embeddings)
-        → LLMManager        (generate grounded answers from retrieved context)
+        → EmbeddingManager          (encode chunks with BAAI/bge-small-en-v1.5)
+        → VectorStore               (persist and search embeddings)
+        → LLMManager                (generate grounded answers from retrieved context)
+
+When the vector store cannot find relevant context for a query the pipeline
+falls back to a structured PostgreSQL lookup:
+    Query
+        → NLToSQLConverter          (LLM converts question → safe SELECT SQL)
+        → CarsRepository            (execute query against the `cars` table)
+        → format answer from rows   (or return NO_CONTEXT_SENTINEL if empty)
 """
 
 import asyncio
@@ -26,7 +33,9 @@ from app.modules.rag.chunker import RecursiveCharacterChunker
 from app.modules.rag.cleaner import TextCleaner
 from app.modules.rag.embeddings import embedding_manager
 from app.modules.rag.llm import llm_manager, llm_output_cleaner
-from app.modules.rag.schemas import SearchResultItem
+from app.modules.database.nl_to_sql import nl_sql_converter
+from app.modules.database.repository import cars_repository
+from app.modules.rag.schemas import NO_CONTEXT_SENTINEL, SearchResultItem
 from app.modules.rag.vector_store import vector_store
 
 logger = get_module_logger(__name__)
@@ -63,21 +72,97 @@ _CONTACT_INTENT_KEYWORDS = frozenset({
 # ---------------------------------------------------------------------------
 
 _ANSWER_SYSTEM_PROMPT = (
-    "You are a knowledgeable and helpful assistant. "
-    "Answer the user's question directly and concisely using ONLY the facts "
-    "present in the Context Information below.\n\n"
+    "You are a strict, grounded assistant that ONLY answers from the provided context.\n\n"
     "Rules:\n"
     "- Answer in plain, natural English — no code, no markdown symbols.\n"
+    "- Use ONLY facts explicitly stated in the Context Information below.\n"
     "- Do NOT use phrases like 'Based on the context', 'According to the text', "
     "  or 'As mentioned in the snippets'.\n"
     "- If the answer is present, state it clearly and completely.\n"
     "- If asking about a specific item (e.g. a book, product, or person), "
     "  include all available details (name, category, price, status, etc.).\n"
     "- If the user asks for a list, present it with clean bullet points.\n"
+    "- CRITICAL: If the Context Information does NOT contain enough information to "
+    "  answer the question, respond with exactly: "
+    "  'I don't have information about that in the available data.'\n"
+    "- Do NOT draw on any general knowledge, training data, or outside facts — "
+    "  even if you know the answer from general knowledge.\n"
     "- Do NOT invent, guess, or hallucinate any facts not in the Context.\n"
     "- Do NOT apologise or refuse if the information is present.\n"
     "- Keep your answer focused and stop when you have answered the question."
 )
+
+
+# ---------------------------------------------------------------------------
+# PostgreSQL row formatter  (used by generate_answer's DB fallback)
+# ---------------------------------------------------------------------------
+
+def _format_db_rows_as_answer(rows: List[Dict[str, Any]]) -> str:
+    """Convert PostgreSQL result rows into a human-readable answer string.
+
+    A single row gets a detailed card layout; multiple rows get a bullet list.
+    This output is returned directly as the ``answer`` field in the API response.
+    """
+    if not rows:
+        return ""
+
+    def _price(row: Dict[str, Any]) -> str:
+        price = row.get("price_usd")
+        return f"USD {float(price):,.0f}" if price is not None else "N/A"
+
+    def _mileage(row: Dict[str, Any]) -> str:
+        km = row.get("mileage_km")
+        return f"{km:,} km" if km is not None else "N/A"
+
+    if len(rows) == 1:
+        car = rows[0]
+        lines = [
+            f"{car.get('brand', '?')} {car.get('model', '?')} ({car.get('year', 'N/A')})",
+            f"  Status   : {car.get('status', 'N/A')}",
+            f"  Category : {car.get('category', 'N/A')}",
+            f"  Origin   : {car.get('country_of_origin', 'N/A')}",
+            f"  Mileage  : {_mileage(car)}",
+            f"  Price    : {_price(car)}",
+        ]
+        if car.get("description"):
+            lines.append(f"  Notes    : {car['description']}")
+        return "\n".join(lines)
+
+    # Multiple rows — concise bullet list.
+    header = f"Found {len(rows)} matching car(s):"
+    bullets = [
+        f"  • {r.get('brand', '?')} {r.get('model', '?')} "
+        f"({r.get('year', '?')}) — {r.get('status', '?')} — {_price(r)}"
+        for r in rows
+    ]
+    return "\n".join([header] + bullets)
+
+
+def _detect_hallucinated_entities(cleaned_answer: str, context_text: str) -> List[str]:
+    """Detect proper nouns, alphanumeric model names, or numbers in the answer
+
+    that do not exist anywhere in the retrieved context text.
+    """
+    context_lower = context_text.lower()
+    candidate_tokens = set(re.findall(r"\b[A-Z0-9][A-Za-z0-9\-]{1,15}\b", cleaned_answer))
+
+    ignored = _RETRIEVAL_STOP_WORDS | {
+        "The", "These", "This", "They", "There", "Here", "Price", "USD", "Source",
+        "Available", "Reserved", "Sold", "Coupe", "Sedan", "Convertible", "Hatchback",
+        "Year", "Mileage", "Country", "Origin", "Direct", "Answer", "According", "Information",
+        "List", "Listings", "Only", "Priced", "Above", "Cost", "Costing", "Given", "Found",
+        "Matching", "Notes", "Status", "Category"
+    }
+
+    hallucinated = []
+    for token in candidate_tokens:
+        if token in ignored or token.isdigit():
+            continue
+        if token.lower() not in context_lower:
+            hallucinated.append(token)
+
+    return hallucinated
+
 
 
 # ---------------------------------------------------------------------------
@@ -451,6 +536,10 @@ class RAGPipelineService:
         has_contact_intent = bool(_CONTACT_INTENT_KEYWORDS & set(keyword_tokens))
 
         # Step 3: compute hybrid scores for every chunk.
+        # HALLUCINATION GUARD: only chunks with a meaningful base semantic score
+        # (>= 0.10) are eligible for keyword boosting. This prevents a chunk that
+        # is semantically unrelated from floating to the top purely on keyword matches.
+        _MIN_BASE_SCORE_FOR_BOOST = 0.10
         hybrid_scored_items: List[Dict[str, Any]] = []
 
         for chunk_index, chunk_metadata in enumerate(vector_store.chunk_metadata):
@@ -460,35 +549,38 @@ class RAGPipelineService:
 
             score_boost = 0.0
 
-            # Exact multi-word phrase match boost.
-            for phrase in keyword_phrases:
-                if phrase in chunk_text_lower:
-                    score_boost += _PHRASE_TEXT_BOOST
-                if phrase in chunk_title_lower:
-                    score_boost += _PHRASE_TITLE_BOOST
+            # Only apply keyword boosts when the chunk has at least a weak semantic
+            # signal — this stops completely unrelated chunks from being promoted.
+            if base_semantic_score >= _MIN_BASE_SCORE_FOR_BOOST:
+                # Exact multi-word phrase match boost.
+                for phrase in keyword_phrases:
+                    if phrase in chunk_text_lower:
+                        score_boost += _PHRASE_TEXT_BOOST
+                    if phrase in chunk_title_lower:
+                        score_boost += _PHRASE_TITLE_BOOST
 
-            # Per-keyword match boost.
-            for keyword in keyword_tokens:
-                escaped_keyword = re.escape(keyword)
-                if re.search(rf"\b{escaped_keyword}\b", chunk_text_lower):
-                    # Section header match gets a stronger boost.
-                    if f"### {keyword}" in chunk_text_lower or f"# {keyword}" in chunk_text_lower:
-                        score_boost += _KEYWORD_SECTION_BOOST
-                    else:
-                        score_boost += _KEYWORD_TEXT_BOOST
-                if re.search(rf"\b{escaped_keyword}\b", chunk_title_lower):
-                    score_boost += _KEYWORD_TITLE_BOOST
+                # Per-keyword match boost.
+                for keyword in keyword_tokens:
+                    escaped_keyword = re.escape(keyword)
+                    if re.search(rf"\b{escaped_keyword}\b", chunk_text_lower):
+                        # Section header match gets a stronger boost.
+                        if f"### {keyword}" in chunk_text_lower or f"# {keyword}" in chunk_text_lower:
+                            score_boost += _KEYWORD_SECTION_BOOST
+                        else:
+                            score_boost += _KEYWORD_TEXT_BOOST
+                    if re.search(rf"\b{escaped_keyword}\b", chunk_title_lower):
+                        score_boost += _KEYWORD_TITLE_BOOST
 
-            # Contact-intent boost (calibrated to not completely override semantics).
-            if has_contact_intent:
-                chunk_url_lower = chunk_metadata.get("url", "").lower()
-                if "contact" in chunk_url_lower and (
-                    "address" in chunk_text_lower
-                    or "+91" in chunk_text_lower
-                ):
-                    score_boost += _CONTACT_EXACT_BOOST
-                elif "+91" in chunk_text_lower or "our address" in chunk_text_lower:
-                    score_boost += _CONTACT_PARTIAL_BOOST
+                # Contact-intent boost (calibrated to not completely override semantics).
+                if has_contact_intent:
+                    chunk_url_lower = chunk_metadata.get("url", "").lower()
+                    if "contact" in chunk_url_lower and (
+                        "address" in chunk_text_lower
+                        or "+91" in chunk_text_lower
+                    ):
+                        score_boost += _CONTACT_EXACT_BOOST
+                    elif "+91" in chunk_text_lower or "our address" in chunk_text_lower:
+                        score_boost += _CONTACT_PARTIAL_BOOST
 
             hybrid_score = base_semantic_score + score_boost
             hybrid_scored_items.append({
@@ -498,19 +590,23 @@ class RAGPipelineService:
                 "title": chunk_metadata["title"],
                 "text": chunk_metadata["text"],
                 "score": round(hybrid_score, 4),
+                "base_semantic_score": round(base_semantic_score, 4),
                 "chunk_index": chunk_metadata.get("chunk_index", 0),
             })
 
         # Step 4: rank descending by hybrid score.
         hybrid_scored_items.sort(key=lambda item: item["score"], reverse=True)
 
-        # Step 5: apply score threshold with graceful fallback.
+        # Step 5: apply score threshold — NO fallback.
+        # HALLUCINATION FIX: The old code had a "graceful fallback" that returned
+        # results even when NOTHING exceeded the threshold. This meant out-of-context
+        # queries always received irrelevant chunks, causing the LLM to hallucinate.
+        # If nothing passes the threshold, we return an empty list so the caller can
+        # correctly tell the user there is no relevant information.
         if score_threshold is not None:
-            threshold_filtered = [
+            filtered_items = [
                 item for item in hybrid_scored_items if item["score"] >= score_threshold
-            ]
-            # Graceful fallback: if nothing meets the threshold, return best matches anyway.
-            filtered_items = threshold_filtered[:top_k] if threshold_filtered else hybrid_scored_items[:top_k]
+            ][:top_k]
         else:
             filtered_items = hybrid_scored_items[:top_k]
 
@@ -531,7 +627,7 @@ class RAGPipelineService:
     # Stage 5: Answer Generation
     # ------------------------------------------------------------------
 
-    def generate_answer(
+    async def generate_answer(
         self,
         query: str,
         top_k: int = settings.RETRIEVAL_TOP_K,
@@ -540,29 +636,21 @@ class RAGPipelineService:
         temperature: float = settings.LLM_TEMPERATURE,
         max_new_tokens: int = settings.LLM_MAX_NEW_TOKENS,
     ) -> Dict[str, Any]:
-        """Retrieve relevant context chunks and synthesize a grounded LLM answer.
+        """Unified 2-tier search & answer generation endpoint.
 
-        Parameters
-        ----------
-        query:
-            The user's natural language question.
-        top_k:
-            Number of context chunks to retrieve.
-        score_threshold:
-            Minimum similarity score for context chunks.
-        reframe:
-            Whether to reframe the query for improved retrieval.
-        temperature:
-            LLM sampling temperature.
-        max_new_tokens:
-            Maximum tokens to generate.
-
-        Returns
-        -------
-        Dict with ``query``, ``answer``, and ``sources`` keys.
+        1. Vector Store Search: Dense vector + keyword hybrid search.
+           If relevant chunks exist, generates a grounded answer with Qwen LLM.
+        2. PostgreSQL Database Fallback: If vector search misses or has weak coverage,
+           converts natural language question to SQL SELECT query against PostgreSQL table.
+        3. Graceful Sentinel Response: If neither vector store nor PostgreSQL has data,
+           returns clean "I don't have information about that in the available data."
+           response with sources: [].
         """
         retrieval_start = time.perf_counter()
 
+        # ------------------------------------------------------------------
+        # Tier 1: Vector Store Search
+        # ------------------------------------------------------------------
         retrieved_chunks = self.search_similar(
             query=query,
             top_k=top_k,
@@ -573,32 +661,63 @@ class RAGPipelineService:
 
         retrieval_elapsed = round(time.perf_counter() - retrieval_start, 3)
         logger.debug(
-            "Retrieval: %d chunks in %.3fs (query='%s').",
+            "Vector retrieval: %d chunks in %.3fs (query='%s').",
             len(retrieved_chunks),
             retrieval_elapsed,
             query,
         )
 
-        if not retrieved_chunks:
-            logger.warning("No relevant context found for query: '%s'.", query)
+        # Helper for PostgreSQL fallback (Tier 2)
+        async def _run_postgres_fallback(reason: str) -> Dict[str, Any]:
+            logger.info(
+                "Triggering PostgreSQL Fallback for query='%s' (Reason: %s).",
+                query,
+                reason,
+            )
+            db_answer: Optional[str] = None
+            try:
+                # Step A: NL -> SQL SELECT query
+                generated_sql = nl_sql_converter.convert(query)
+                if generated_sql:
+                    db_rows = await cars_repository.execute_safe_select(generated_sql)
+                    if db_rows:
+                        db_answer = _format_db_rows_as_answer(db_rows)
+                        logger.info("PostgreSQL Fallback: SQL returned %d row(s).", len(db_rows))
+
+                # Step B: Keyword fallback if SQL returned no rows
+                if db_answer is None:
+                    keywords = [w for w in query.split() if len(w) > 3]
+                    keyword = max(keywords, key=len, default="")
+                    if keyword:
+                        kw_rows = await cars_repository.search_cars_by_keyword(keyword)
+                        if kw_rows:
+                            db_answer = _format_db_rows_as_answer(kw_rows)
+                            logger.info("PostgreSQL Fallback: Keyword search returned %d row(s).", len(kw_rows))
+            except Exception as db_exc:
+                logger.warning("PostgreSQL Fallback exception: %s", db_exc)
+
+            final_answer = db_answer or NO_CONTEXT_SENTINEL
+            total_elapsed = round((time.perf_counter() - retrieval_start) * 1000, 2)
+
             return {
                 "query": query,
-                "answer": (
-                    "I could not find relevant information in the available data "
-                    "to answer your question."
-                ),
+                "answer": final_answer,
                 "sources": [],
                 "evaluation": {
                     "retrieval_confidence": 0.0,
                     "context_coverage": 0.0,
-                    "faithfulness_score": 1.0,
+                    "faithfulness_score": 1.0 if db_answer is None else 0.0,
                     "retrieval_time_ms": round(retrieval_elapsed * 1000, 2),
                     "generation_time_ms": 0.0,
-                    "total_time_ms": round(retrieval_elapsed * 1000, 2),
+                    "total_time_ms": total_elapsed,
                 },
             }
 
-        # Deduplicate chunks by chunk_id to avoid feeding identical text to the LLM.
+        # If vector store returned zero chunks, fallback to PostgreSQL immediately
+        if not retrieved_chunks:
+            return await _run_postgres_fallback("No vector chunks passed score threshold")
+
+        # Deduplicate chunks by chunk_id
         seen_chunk_ids: set = set()
         unique_chunks: List[SearchResultItem] = []
         for chunk in retrieved_chunks:
@@ -606,13 +725,34 @@ class RAGPipelineService:
                 seen_chunk_ids.add(chunk.chunk_id)
                 unique_chunks.append(chunk)
 
-        # Build context string with numbered source references.
+        # Build context text
         context_blocks = [
             f"Source [{index + 1}] ({chunk.title}):\n{chunk.text}"
             for index, chunk in enumerate(unique_chunks)
         ]
         context_text = "\n\n".join(context_blocks)
+        context_lower = context_text.lower()
 
+        # Compute query term coverage across vector context
+        stop_words = _RETRIEVAL_STOP_WORDS
+        query_words = {
+            w.lower() for w in re.findall(r"\w+", query)
+            if w.lower() not in stop_words and len(w) > 2
+        }
+        if query_words:
+            matched_query_words = sum(1 for w in query_words if w in context_lower)
+            context_coverage = round(matched_query_words / len(query_words), 4)
+        else:
+            context_coverage = 1.0
+
+        # Pre-LLM Guard: If vector context coverage is weak (< 0.40), fallback to PostgreSQL
+        _MIN_PRE_CONTEXT_COVERAGE = 0.40
+        if context_coverage < _MIN_PRE_CONTEXT_COVERAGE:
+            return await _run_postgres_fallback(
+                f"Weak vector context coverage ({context_coverage:.4f} < {_MIN_PRE_CONTEXT_COVERAGE})"
+            )
+
+        # Generate answer with LLM using grounded vector context
         generation_prompt = (
             f"Context Information:\n{context_text}\n\n"
             f"Question: {query}\n\n"
@@ -630,30 +770,38 @@ class RAGPipelineService:
 
         cleaned_answer = llm_output_cleaner.clean(raw_answer)
 
-        # Calculate production evaluation metrics (RAG Triad & Performance)
-        retrieval_confidence = (
-            round(sum(c.score for c in unique_chunks) / len(unique_chunks), 4)
-            if unique_chunks
-            else 0.0
-        )
+        # Check sentinel detection
+        answer_is_out_of_context = NO_CONTEXT_SENTINEL.lower() in cleaned_answer.lower()
+        if answer_is_out_of_context:
+            return await _run_postgres_fallback("LLM produced sentinel phrase (no vector info)")
 
-        stop_words = _RETRIEVAL_STOP_WORDS
-        query_words = {w.lower() for w in re.findall(r"\w+", query) if w.lower() not in stop_words and len(w) > 2}
-        context_lower = context_text.lower()
-
-        if query_words:
-            matched_query_words = sum(1 for w in query_words if w in context_lower)
-            context_coverage = round(matched_query_words / len(query_words), 4)
-        else:
-            context_coverage = 1.0
-
-        answer_words = {w.lower() for w in re.findall(r"\w+", cleaned_answer) if w.lower() not in stop_words and len(w) > 2}
+        # Evaluate answer faithfulness
+        answer_words = {
+            w.lower() for w in re.findall(r"\w+", cleaned_answer)
+            if w.lower() not in stop_words and len(w) > 2
+        }
         if answer_words:
             supported_answer_words = sum(1 for w in answer_words if w in context_lower)
             faithfulness_score = round(supported_answer_words / len(answer_words), 4)
         else:
             faithfulness_score = 1.0
 
+        # Post-LLM Anti-Hallucination Guard: detect ungrounded model codes or entities
+        hallucinated_entities = _detect_hallucinated_entities(cleaned_answer, context_text)
+        _FAITHFULNESS_HALLUCINATION_THRESHOLD = 0.05
+
+        if (hallucinated_entities or faithfulness_score < _FAITHFULNESS_HALLUCINATION_THRESHOLD) and unique_chunks:
+            logger.warning(
+                "Post-generation anti-hallucination guard triggered for query='%s'. Hallucinated terms: %s. Fallback to PostgreSQL.",
+                query,
+                hallucinated_entities,
+            )
+            return await _run_postgres_fallback(
+                f"Post-LLM hallucination detected (terms: {hallucinated_entities})"
+            )
+
+        # Successful grounded vector answer
+        retrieval_confidence = round(sum(c.score for c in unique_chunks) / len(unique_chunks), 4)
         evaluation_metrics = {
             "retrieval_confidence": retrieval_confidence,
             "context_coverage": context_coverage,
@@ -664,10 +812,8 @@ class RAGPipelineService:
         }
 
         logger.info(
-            "Answer generated in %.3fs (retrieval=%.3fs, generation=%.3fs) for query='%s'.",
+            "Vector answer generated in %.3fs for query='%s'.",
             retrieval_elapsed + generation_elapsed,
-            retrieval_elapsed,
-            generation_elapsed,
             query,
         )
 
